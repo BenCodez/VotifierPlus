@@ -22,12 +22,19 @@ import java.io.File;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.security.KeyPair;
+import java.util.ArrayList;
 
 import com.Ben12345rocks.AdvancedCore.AdvancedCorePlugin;
+import com.Ben12345rocks.AdvancedCore.CommandAPI.CommandHandler;
+import com.vexsoftware.votifier.commands.CommandLoader;
+import com.vexsoftware.votifier.commands.CommandVotifierPlus;
+import com.vexsoftware.votifier.commands.VotifierPlusTabCompleter;
 import com.vexsoftware.votifier.config.Config;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
 import com.vexsoftware.votifier.net.VoteReceiver;
+
+import lombok.Getter;
 
 /**
  * The main Votifier plugin class.
@@ -48,8 +55,15 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	/** The RSA key pair. */
 	private KeyPair keyPair;
 
+	@Getter
+	private ArrayList<CommandHandler> commands = new ArrayList<CommandHandler>();
+
 	@Override
 	public void onPostLoad() {
+
+		getCommand("votifierplus").setExecutor(new CommandVotifierPlus(this));
+		getCommand("votifierplus").setTabCompleter(new VotifierPlusTabCompleter());
+		CommandLoader.getInstance().loadCommands();
 
 		File rsaDirectory = new File(getDataFolder() + "/rsa");
 
@@ -71,6 +85,10 @@ public class VotifierPlus extends AdvancedCorePlugin {
 			return;
 		}
 
+		loadVoteReceiver();
+	}
+
+	private void loadVoteReceiver() {
 		try {
 			voteReceiver = new VoteReceiver(this, config.getHost(), config.getPort());
 			voteReceiver.start();
@@ -177,12 +195,17 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	public void reload() {
 		config.reloadData();
 		updateAdvancedCoreHook();
+		voteReceiver.shutdown();
+		loadVoteReceiver();
 	}
 
 	public void updateAdvancedCoreHook() {
 		// getJavascriptEngine().put("VotingPlugin", this);
 		// allowDownloadingFromSpigot(15358);
 		setConfigData(config.getData());
+		setLoadRewards(false);
+		setLoadServerData(false);
+		setLoadUserData(false);
 	}
 
 }

@@ -4,3 +4,6 @@ version: ${project.version}
 description: A plugin that gets notified when votes are made for the server on toplists.
 author: Ben12345rocks
 api-version: 1.13
+commands:
+  votifierplus:
+    description: main command

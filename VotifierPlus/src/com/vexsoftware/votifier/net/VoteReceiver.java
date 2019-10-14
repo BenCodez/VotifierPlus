@@ -93,6 +93,7 @@ public class VoteReceiver extends Thread {
 		try {
 			server = new ServerSocket();
 			server.bind(new InetSocketAddress(host, port));
+			plugin.debug(server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
 		} catch (Exception ex) {
 			plugin.getLogger().severe("Error initializing vote receiver. Please verify that the configured");
 			plugin.getLogger().severe("IP address and port are not already in use. This is a common problem");
@@ -164,6 +165,10 @@ public class VoteReceiver extends Thread {
 				vote.setAddress(address);
 				vote.setTimeStamp(timeStamp);
 
+				if (timeStamp.equalsIgnoreCase("TestVote")) {
+					plugin.getLogger().info("Test vote received");
+				}
+
 				plugin.debug("Received vote record -> " + vote);
 
 				for (String server : plugin.config.getServers()) {
@@ -226,7 +231,7 @@ public class VoteReceiver extends Thread {
 
 	}
 
-	private byte[] encrypt(byte[] data, PublicKey key) throws Exception {
+	public byte[] encrypt(byte[] data, PublicKey key) throws Exception {
 		Cipher cipher = Cipher.getInstance("RSA");
 		cipher.init(Cipher.ENCRYPT_MODE, key);
 		return cipher.doFinal(data);
