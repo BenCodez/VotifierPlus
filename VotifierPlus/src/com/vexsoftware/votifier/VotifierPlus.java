@@ -23,10 +23,8 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.security.KeyPair;
 
-import org.bukkit.Bukkit;
-import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.plugin.java.JavaPlugin;
-
+import com.Ben12345rocks.AdvancedCore.AdvancedCorePlugin;
+import com.vexsoftware.votifier.config.Config;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
 import com.vexsoftware.votifier.net.VoteReceiver;
@@ -37,13 +35,12 @@ import com.vexsoftware.votifier.net.VoteReceiver;
  * @author Blake Beaupain
  * @author Kramer Campbell
  */
-public class VotifierPlus extends JavaPlugin {
+public class VotifierPlus extends AdvancedCorePlugin {
 
 	/** The Votifier instance. */
 	private static VotifierPlus instance;
 
-	/** The current Votifier version. */
-	private String version;
+	public Config config;
 
 	/** The vote receiver. */
 	private VoteReceiver voteReceiver;
@@ -51,83 +48,10 @@ public class VotifierPlus extends JavaPlugin {
 	/** The RSA key pair. */
 	private KeyPair keyPair;
 
-	/** Debug mode flag */
-	private boolean debug;
-
 	@Override
-	public void onEnable() {
-		VotifierPlus.instance = this;
+	public void onPostLoad() {
 
-		// Set the plugin version.
-		version = getDescription().getVersion();
-
-		// Handle configuration.
-		if (!getDataFolder().exists()) {
-			getDataFolder().mkdir();
-		}
-		File config = new File(getDataFolder() + "/config.yml");
-		YamlConfiguration cfg = YamlConfiguration.loadConfiguration(config);
 		File rsaDirectory = new File(getDataFolder() + "/rsa");
-		// Replace to remove a bug with Windows paths - SmilingDevil
-		String listenerDirectory = getDataFolder().toString().replace("\\", "/") + "/listeners";
-
-		/*
-		 * Use IP address from server.properties as a default for
-		 * configurations. Do not use InetAddress.getLocalHost() as it most
-		 * likely will return the main server address instead of the address
-		 * assigned to the server.
-		 */
-		String hostAddr = Bukkit.getServer().getIp();
-		if (hostAddr == null || hostAddr.length() == 0)
-			hostAddr = "0.0.0.0";
-
-		/*
-		 * Create configuration file if it does not exists; otherwise, load it
-		 */
-		if (!config.exists()) {
-			int openPort = 8192;
-			try {
-				ServerSocket s = new ServerSocket();
-				s.bind(new InetSocketAddress("0.0.0.0", 0));
-				openPort = s.getLocalPort();
-				s.close();
-			} catch (Exception e) {
-
-			}
-			try {
-				// First time run - do some initialization.
-				getLogger().info("Configuring Votifier for the first time...");
-
-				// Initialize the configuration file.
-				config.createNewFile();
-
-				cfg.set("host", hostAddr);
-
-				cfg.set("port", openPort);
-				cfg.set("debug", false);
-
-				/*
-				 * Remind hosted server admins to be sure they have the right
-				 * port number.
-				 */
-				getLogger().info("------------------------------------------------------------------------------");
-				getLogger().info(
-						"Assigning Votifier to listen on port " + openPort + ". If you are hosting Craftbukkit on a");
-				getLogger().info("shared server please check with your hosting provider to verify that this port");
-				getLogger().info("is available for your use. Chances are that your hosting provider will assign");
-				getLogger().info("a different port, which you need to specify in config.yml");
-				getLogger().info("------------------------------------------------------------------------------");
-
-				cfg.save(config);
-			} catch (Exception ex) {
-				getLogger().severe("Error creating configuration file");
-				gracefulExit();
-				return;
-			}
-		} else {
-			// Load configuration.
-			cfg = YamlConfiguration.loadConfiguration(config);
-		}
 
 		/*
 		 * Create RSA directory and keys if it does not exist; otherwise, read
@@ -136,7 +60,6 @@ public class VotifierPlus extends JavaPlugin {
 		try {
 			if (!rsaDirectory.exists()) {
 				rsaDirectory.mkdir();
-				new File(listenerDirectory).mkdir();
 				keyPair = RSAKeygen.generate(2048);
 				RSAIO.save(rsaDirectory, keyPair);
 			} else {
@@ -148,15 +71,8 @@ public class VotifierPlus extends JavaPlugin {
 			return;
 		}
 
-		// Initialize the receiver.
-		String host = cfg.getString("host", hostAddr);
-		int port = cfg.getInt("port", 8192);
-		debug = cfg.getBoolean("debug", false);
-		if (debug)
-			getLogger().info("DEBUG mode enabled!");
-
 		try {
-			voteReceiver = new VoteReceiver(this, host, port);
+			voteReceiver = new VoteReceiver(this, config.getHost(), config.getPort());
 			voteReceiver.start();
 
 			getLogger().info("Votifier enabled.");
@@ -189,15 +105,6 @@ public class VotifierPlus extends JavaPlugin {
 	}
 
 	/**
-	 * Gets the version.
-	 * 
-	 * @return The version
-	 */
-	public String getVersion() {
-		return version;
-	}
-
-	/**
 	 * Gets the vote receiver.
 	 * 
 	 * @return The vote receiver
@@ -215,8 +122,67 @@ public class VotifierPlus extends JavaPlugin {
 		return keyPair;
 	}
 
-	public boolean isDebug() {
-		return debug;
+	@Override
+	public void onPreLoad() {
+		VotifierPlus.instance = this;
+
+		config = new Config();
+		config.setup();
+
+		if (config.isJustCreated()) {
+			int openPort = 8192;
+			try {
+				ServerSocket s = new ServerSocket();
+				s.bind(new InetSocketAddress("0.0.0.0", 0));
+				openPort = s.getLocalPort();
+				s.close();
+			} catch (Exception e) {
+
+			}
+			try {
+				// First time run - do some initialization.
+				getLogger().info("Configuring Votifier for the first time...");
+				config.getData().set("port", openPort);
+				config.saveData();
+
+				/*
+				 * Remind hosted server admins to be sure they have the right
+				 * port number.
+				 */
+				getLogger().info("------------------------------------------------------------------------------");
+				getLogger().info("Assigning Votifier to listen on an open port " + openPort
+						+ ". If you are hosting Craftbukkit on a");
+				getLogger().info("shared server please check with your hosting provider to verify that this port");
+				getLogger().info("is available for your use. Chances are that your hosting provider will assign");
+				getLogger().info("a different port, which you need to specify in config.yml");
+				getLogger().info("------------------------------------------------------------------------------");
+
+			} catch (Exception ex) {
+				VotifierPlus.getInstance().getLogger().severe("Error creating configuration file");
+				VotifierPlus.getInstance().debug(ex);
+			}
+		}
+		config.loadValues();
+
+		updateAdvancedCoreHook();
+
+	}
+
+	@Override
+	public void onUnLoad() {
+
+	}
+
+	@Override
+	public void reload() {
+		config.reloadData();
+		updateAdvancedCoreHook();
+	}
+
+	public void updateAdvancedCoreHook() {
+		// getJavascriptEngine().put("VotingPlugin", this);
+		// allowDownloadingFromSpigot(15358);
+		setConfigData(config.getData());
 	}
 
 }
