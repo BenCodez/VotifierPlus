@@ -26,6 +26,7 @@ import java.util.ArrayList;
 
 import com.Ben12345rocks.AdvancedCore.AdvancedCorePlugin;
 import com.Ben12345rocks.AdvancedCore.CommandAPI.CommandHandler;
+import com.Ben12345rocks.AdvancedCore.Util.Metrics.BStatsMetrics;
 import com.vexsoftware.votifier.commands.CommandLoader;
 import com.vexsoftware.votifier.commands.CommandVotifierPlus;
 import com.vexsoftware.votifier.commands.VotifierPlusTabCompleter;
@@ -86,6 +87,8 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		}
 
 		loadVoteReceiver();
+
+		metrics();
 	}
 
 	private void loadVoteReceiver() {
@@ -184,6 +187,23 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 		updateAdvancedCoreHook();
 
+	}
+
+	private void metrics() {
+		BStatsMetrics metrics = new BStatsMetrics(this);
+		metrics.addCustomChart(new BStatsMetrics.SimplePie("Forwarding") {
+
+			@Override
+			public String getValue() {
+				int amount = 0;
+				for (String server : config.getServers()) {
+					if (config.getForwardingConfiguration(server).getBoolean("Enabled")) {
+						amount++;
+					}
+				}
+				return "" + amount;
+			}
+		});
 	}
 
 	@Override
