@@ -22,14 +22,12 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.spec.RSAKeyGenParameterSpec;
 
-import com.vexsoftware.votifier.VotifierPlus;
-
 /**
  * An RSA key pair generator.
  * 
  * @author Blake Beaupain
  */
-public class RSAKeygen {
+public abstract class RSAKeygen {
 
 	/**
 	 * Generates an RSA key pair.
@@ -41,7 +39,6 @@ public class RSAKeygen {
 	 *             exception
 	 */
 	public static KeyPair generate(int bits) throws Exception {
-		VotifierPlus.getInstance().getLogger().info("Votifier is generating an RSA key pair...");
 		KeyPairGenerator keygen = KeyPairGenerator.getInstance("RSA");
 		RSAKeyGenParameterSpec spec = new RSAKeyGenParameterSpec(bits, RSAKeyGenParameterSpec.F4);
 		keygen.initialize(spec);

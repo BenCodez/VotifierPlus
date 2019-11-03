@@ -23,6 +23,10 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.security.KeyPair;
 import java.util.ArrayList;
+import java.util.Set;
+
+import org.bukkit.Bukkit;
+import org.bukkit.configuration.ConfigurationSection;
 
 import com.Ben12345rocks.AdvancedCore.AdvancedCorePlugin;
 import com.Ben12345rocks.AdvancedCore.CommandAPI.CommandHandler;
@@ -33,6 +37,8 @@ import com.vexsoftware.votifier.commands.VotifierPlusTabCompleter;
 import com.vexsoftware.votifier.config.Config;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
+import com.vexsoftware.votifier.model.Vote;
+import com.vexsoftware.votifier.model.VotifierEvent;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
 import lombok.Getter;
@@ -93,7 +99,64 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 	private void loadVoteReceiver() {
 		try {
-			voteReceiver = new VoteReceiver(this, config.getHost(), config.getPort());
+			voteReceiver = new VoteReceiver(config.getHost(), config.getPort()) {
+
+				@Override
+				public void logWarning(String warn) {
+					getLogger().warning(warn);
+				}
+
+				@Override
+				public void logSevere(String msg) {
+					getLogger().severe(msg);
+				}
+
+				@Override
+				public void log(String msg) {
+					getLogger().info(msg);
+				}
+
+				@Override
+				public String getVersion() {
+					return getDescription().getVersion();
+				}
+
+				@Override
+				public Set<String> getServers() {
+					return config.getServers();
+				}
+
+				@Override
+				public ForwardServer getServerData(String s) {
+					ConfigurationSection d = config.getForwardingConfiguration(s);
+					return new ForwardServer(d.getBoolean("Enabled"), d.getString("Host", ""), d.getInt("Port"),
+							d.getString("Key", ""));
+				}
+
+				@Override
+				public KeyPair getKeyPair() {
+					return instance.getKeyPair();
+				}
+
+				@Override
+				public void debug(Exception e) {
+					instance.debug(e);
+				}
+
+				@Override
+				public void debug(String debug) {
+					instance.debug(debug);
+				}
+
+				@Override
+				public void callEvent(Vote vote) {
+					getServer().getScheduler().scheduleSyncDelayedTask(instance, new Runnable() {
+						public void run() {
+							Bukkit.getServer().getPluginManager().callEvent(new VotifierEvent(vote));
+						}
+					});
+				}
+			};
 			voteReceiver.start();
 
 			getLogger().info("Votifier enabled.");

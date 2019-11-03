@@ -28,20 +28,18 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketException;
 import java.security.KeyFactory;
+import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.Set;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
 import javax.xml.bind.DatatypeConverter;
 
-import org.bukkit.Bukkit;
-import org.bukkit.configuration.ConfigurationSection;
-
-import com.vexsoftware.votifier.VotifierPlus;
+import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSA;
 import com.vexsoftware.votifier.model.Vote;
-import com.vexsoftware.votifier.model.VotifierEvent;
 
 /**
  * The vote receiving server.
@@ -49,9 +47,7 @@ import com.vexsoftware.votifier.model.VotifierEvent;
  * @author Blake Beaupain
  * @author Kramer Campbell
  */
-public class VoteReceiver extends Thread {
-
-	private final VotifierPlus plugin;
+public abstract class VoteReceiver extends Thread {
 
 	/** The host to listen on. */
 	private final String host;
@@ -66,10 +62,7 @@ public class VoteReceiver extends Thread {
 	private boolean running = true;
 
 	/**
-	 * Instantiates a new vote receiver.
-	 * 
-	 * @param plugin
-	 *            plugin
+	 * Instantiates a new vote receiver
 	 * 
 	 * @param host
 	 *            The host to listen on
@@ -78,9 +71,8 @@ public class VoteReceiver extends Thread {
 	 * @throws Exception
 	 *             exception
 	 */
-	public VoteReceiver(final VotifierPlus plugin, String host, int port) throws Exception {
+	public VoteReceiver(String host, int port) throws Exception {
 		super("Votifier I/O");
-		this.plugin = plugin;
 		this.host = host;
 		this.port = port;
 
@@ -93,15 +85,25 @@ public class VoteReceiver extends Thread {
 		try {
 			server = new ServerSocket();
 			server.bind(new InetSocketAddress(host, port));
-			plugin.debug(server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
+			debug(server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
 		} catch (Exception ex) {
-			plugin.getLogger().severe("Error initializing vote receiver. Please verify that the configured");
-			plugin.getLogger().severe("IP address and port are not already in use. This is a common problem");
-			plugin.getLogger().severe("with hosting services and, if so, you should check with your hosting provider.");
+			logSevere("Error initializing vote receiver. Please verify that the configured");
+			logSevere("IP address and port are not already in use. This is a common problem");
+			logSevere("with hosting services and, if so, you should check with your hosting provider.");
 			ex.printStackTrace();
 			throw new Exception(ex);
 		}
 	}
+
+	public abstract void logWarning(String warn);
+
+	public abstract void logSevere(String msg);
+
+	public abstract void log(String msg);
+
+	public abstract void debug(String debug);
+
+	public abstract String getVersion();
 
 	/**
 	 * Shuts the vote receiver down cleanly.
@@ -113,9 +115,13 @@ public class VoteReceiver extends Thread {
 		try {
 			server.close();
 		} catch (Exception ex) {
-			plugin.getLogger().warning("Unable to shut down vote receiver cleanly.");
+			logWarning("Unable to shut down vote receiver cleanly.");
 		}
 	}
+
+	public abstract Set<String> getServers();
+
+	public abstract KeyPair getKeyPair();
 
 	@Override
 	public void run() {
@@ -128,7 +134,7 @@ public class VoteReceiver extends Thread {
 				InputStream in = socket.getInputStream();
 
 				// Send them our version.
-				writer.write("VOTIFIERPLUS " + plugin.getVersion());
+				writer.write("VOTIFIERPLUS " + getVersion());
 				writer.newLine();
 				writer.flush();
 
@@ -137,7 +143,7 @@ public class VoteReceiver extends Thread {
 				in.read(block, 0, block.length);
 
 				// Decrypt the block.
-				block = RSA.decrypt(block, plugin.getKeyPair().getPrivate());
+				block = RSA.decrypt(block, getKeyPair().getPrivate());
 				int position = 0;
 
 				// Perform the opcode check.
@@ -166,21 +172,21 @@ public class VoteReceiver extends Thread {
 				vote.setTimeStamp(timeStamp);
 
 				if (timeStamp.equalsIgnoreCase("TestVote")) {
-					plugin.getLogger().info("Test vote received");
+					log("Test vote received");
 				}
 
-				plugin.debug("Received vote record -> " + vote);
+				debug("Received vote record -> " + vote);
 
-				for (String server : plugin.config.getServers()) {
-					ConfigurationSection d = plugin.config.getForwardingConfiguration(server);
-					if (d.getBoolean("Enabled", false)) {
-						plugin.debug("Sending vote to " + server);
-						byte[] encodedPublicKey = DatatypeConverter.parseBase64Binary(d.getString("Key", ""));
+				for (String server : getServers()) {
+					ForwardServer forwardServer = getServerData(server);
+					if (forwardServer.isEnabled()) {
+						debug("Sending vote to " + server);
+						byte[] encodedPublicKey = DatatypeConverter.parseBase64Binary(forwardServer.getKey());
 						KeyFactory keyFactory = KeyFactory.getInstance("RSA");
 						X509EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(encodedPublicKey);
 						PublicKey publicKey = keyFactory.generatePublic(publicKeySpec);
-						String serverIP = d.getString("Host", "");
-						int serverPort = d.getInt("Port", 0);
+						String serverIP = forwardServer.getHost();
+						int serverPort = forwardServer.getPort();
 						if (serverIP.length() != 0) {
 							try {
 								String VoteString = "VOTE\n" + vote.getServiceName() + "\n" + vote.getUsername() + "\n"
@@ -195,8 +201,8 @@ public class VoteReceiver extends Thread {
 								socket1.close();
 
 							} catch (Exception e) {
-								plugin.getLogger().info("Failed to send vote to " + server + "(" + serverIP + ":"
-										+ serverPort + "): " + vote.toString() + ", ignore this if server is offline");
+								log("Failed to send vote to " + server + "(" + serverIP + ":" + serverPort + "): "
+										+ vote.toString() + ", ignore this if server is offline");
 							}
 						}
 
@@ -206,30 +212,32 @@ public class VoteReceiver extends Thread {
 				// Call event in a synchronized fashion to ensure that the
 				// custom event runs in the
 				// the main server thread, not this one.
-				plugin.getServer().getScheduler().scheduleSyncDelayedTask(plugin, new Runnable() {
-					public void run() {
-						Bukkit.getServer().getPluginManager().callEvent(new VotifierEvent(vote));
-					}
-				});
+				callEvent(vote);
 
 				// Clean up.
 				writer.close();
 				in.close();
 				socket.close();
 			} catch (SocketException ex) {
-				plugin.getLogger().warning("Protocol error. Ignoring packet - " + ex.getLocalizedMessage());
-				plugin.debug(ex);
+				logWarning("Protocol error. Ignoring packet - " + ex.getLocalizedMessage());
+				debug(ex);
 			} catch (BadPaddingException ex) {
-				plugin.getLogger().warning("Unable to decrypt vote record. Make sure that that your public key");
-				plugin.getLogger().warning("matches the one you gave the server list.");
-				plugin.debug(ex);
+				logWarning("Unable to decrypt vote record. Make sure that that your public key");
+				logWarning("matches the one you gave the server list.");
+				debug(ex);
 			} catch (Exception ex) {
-				plugin.getLogger().warning("Exception caught while receiving a vote notification");
-				plugin.debug(ex);
+				logWarning("Exception caught while receiving a vote notification");
+				debug(ex);
 			}
 		}
 
 	}
+
+	public abstract ForwardServer getServerData(String s);
+
+	public abstract void debug(Exception e);
+
+	public abstract void callEvent(Vote e);
 
 	public byte[] encrypt(byte[] data, PublicKey key) throws Exception {
 		Cipher cipher = Cipher.getInstance("RSA");
