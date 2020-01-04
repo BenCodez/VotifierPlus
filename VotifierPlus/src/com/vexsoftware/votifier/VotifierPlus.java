@@ -31,6 +31,7 @@ import org.bukkit.configuration.ConfigurationSection;
 import com.Ben12345rocks.AdvancedCore.AdvancedCorePlugin;
 import com.Ben12345rocks.AdvancedCore.CommandAPI.CommandHandler;
 import com.Ben12345rocks.AdvancedCore.Util.Metrics.BStatsMetrics;
+import com.Ben12345rocks.AdvancedCore.Util.Updater.Updater;
 import com.vexsoftware.votifier.commands.CommandLoader;
 import com.vexsoftware.votifier.commands.CommandVotifierPlus;
 import com.vexsoftware.votifier.commands.VotifierPlusTabCompleter;
@@ -42,6 +43,7 @@ import com.vexsoftware.votifier.model.VotifierEvent;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
 import lombok.Getter;
+import lombok.Setter;
 
 /**
  * The main Votifier plugin class.
@@ -55,6 +57,10 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	private static VotifierPlus instance;
 
 	public Config config;
+
+	@Getter
+	@Setter
+	private Updater updater;
 
 	/** The vote receiver. */
 	private VoteReceiver voteReceiver;
@@ -95,6 +101,14 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		loadVoteReceiver();
 
 		metrics();
+
+		Bukkit.getScheduler().runTaskLaterAsynchronously(instance, new Runnable() {
+
+			@Override
+			public void run() {
+				new CheckUpdate(instance).checkUpdate();
+			}
+		}, 5l);
 	}
 
 	private void loadVoteReceiver() {

@@ -52,6 +52,10 @@ public class Config extends YMLFile {
 	@Setter
 	private Set<String> servers = new HashSet<String>();
 
+	@ConfigDataBoolean(path = "DisableUpdateChecking")
+	@Getter
+	private boolean disableUpdateChecking = false;
+
 	public ConfigurationSection getForwardingConfiguration(String s) {
 		return getData().getConfigurationSection("Forwarding." + s);
 	}
