@@ -31,11 +31,11 @@ import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import java.util.Set;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
-import javax.xml.bind.DatatypeConverter;
 
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSA;
@@ -181,7 +181,8 @@ public abstract class VoteReceiver extends Thread {
 					ForwardServer forwardServer = getServerData(server);
 					if (forwardServer.isEnabled()) {
 						debug("Sending vote to " + server);
-						byte[] encodedPublicKey = DatatypeConverter.parseBase64Binary(forwardServer.getKey());
+
+						byte[] encodedPublicKey = Base64.getDecoder().decode(forwardServer.getKey());
 						KeyFactory keyFactory = KeyFactory.getInstance("RSA");
 						X509EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(encodedPublicKey);
 						PublicKey publicKey = keyFactory.generatePublic(publicKeySpec);

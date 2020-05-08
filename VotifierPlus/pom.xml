@@ -273,6 +273,5 @@
 			<version>LATEST</version>
 			<scope>provided</scope>
 		</dependency>
-		
 	</dependencies>
 </project>
