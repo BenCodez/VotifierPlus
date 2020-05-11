@@ -55,7 +55,9 @@ public class RSAIO {
 		FileOutputStream out = null;
 		try {
 			out = new FileOutputStream(directory + "/public.key");
-			out.write(Base64.getDecoder().decode(publicSpec.getEncoded()));
+			out.write(Base64.getEncoder().encodeToString(publicSpec.getEncoded()).getBytes());
+		} catch (Exception e) {
+			e.printStackTrace();
 		} finally {
 			if (out != null) {
 				out.close();
@@ -67,7 +69,9 @@ public class RSAIO {
 		PKCS8EncodedKeySpec privateSpec = new PKCS8EncodedKeySpec(privateKey.getEncoded());
 		try {
 			out = new FileOutputStream(directory + "/private.key");
-			out.write(Base64.getDecoder().decode(privateSpec.getEncoded()));
+			out.write(Base64.getEncoder().encodeToString(privateSpec.getEncoded()).getBytes());
+		} catch (Exception e) {
+			e.printStackTrace();
 		} finally {
 			if (out != null) {
 				out.close();
@@ -88,22 +92,24 @@ public class RSAIO {
 	public static KeyPair load(File directory) throws Exception {
 		// Read the public key file.
 		File publicKeyFile = new File(directory + "/public.key");
-		byte[] encodedPublicKey;
+		byte[] encodedPublicKey = null;
 		try (FileInputStream in = new FileInputStream(publicKeyFile)) {
 			encodedPublicKey = new byte[(int) publicKeyFile.length()];
 			in.read(encodedPublicKey);
-			encodedPublicKey = Base64.getEncoder().encode(encodedPublicKey);
-		} finally {
-
+			encodedPublicKey = Base64.getDecoder().decode(encodedPublicKey);
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 
 		// Read the private key file.
 		File privateKeyFile = new File(directory + "/private.key");
-		byte[] encodedPrivateKey;
+		byte[] encodedPrivateKey = null;
 		try (FileInputStream in = new FileInputStream(privateKeyFile)) {
 			encodedPrivateKey = new byte[(int) privateKeyFile.length()];
 			in.read(encodedPrivateKey);
-			encodedPrivateKey = Base64.getEncoder().encode(encodedPrivateKey);
+			encodedPrivateKey = Base64.getDecoder().decode(encodedPrivateKey);
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 
 		// Instantiate and return the key pair.
