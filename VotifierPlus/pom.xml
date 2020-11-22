@@ -248,8 +248,8 @@
 	</repositories>
 	<dependencies>
 		<dependency>
-			<groupId>com.github.Ben12345rocks</groupId>
-			<artifactId>AdvancedCore</artifactId>
+			<groupId>com.github.BenCodez</groupId>
+			<artifactId>advancedcore</artifactId>
 			<version>master-SNAPSHOT</version>
 		</dependency>
 

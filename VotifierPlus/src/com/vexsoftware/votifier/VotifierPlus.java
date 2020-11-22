@@ -28,10 +28,10 @@ import java.util.Set;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
 
-import com.Ben12345rocks.AdvancedCore.AdvancedCorePlugin;
-import com.Ben12345rocks.AdvancedCore.CommandAPI.CommandHandler;
-import com.Ben12345rocks.AdvancedCore.Util.Metrics.BStatsMetrics;
-import com.Ben12345rocks.AdvancedCore.Util.Updater.Updater;
+import com.bencodez.advancedcore.AdvancedCorePlugin;
+import com.bencodez.advancedcore.api.command.CommandHandler;
+import com.bencodez.advancedcore.api.metrics.BStatsMetrics;
+import com.bencodez.advancedcore.api.updater.Updater;
 import com.vexsoftware.votifier.commands.CommandLoader;
 import com.vexsoftware.votifier.commands.CommandVotifierPlus;
 import com.vexsoftware.votifier.commands.VotifierPlusTabCompleter;
@@ -224,7 +224,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	public void onPreLoad() {
 		VotifierPlus.instance = this;
 
-		config = new Config();
+		config = new Config(this);
 		config.setup();
 
 		if (config.isJustCreated()) {

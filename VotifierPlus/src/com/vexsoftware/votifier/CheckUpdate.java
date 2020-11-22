@@ -1,6 +1,6 @@
 package com.vexsoftware.votifier;
 
-import com.Ben12345rocks.AdvancedCore.Util.Updater.Updater;
+import com.bencodez.advancedcore.api.updater.Updater;
 
 // TODO: Auto-generated Javadoc
 /**
