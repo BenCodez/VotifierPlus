@@ -248,14 +248,6 @@
 	</repositories>
 	<dependencies>
 		<dependency>
-			<groupId>com.github.BenCodez</groupId>
-			<artifactId>advancedcore</artifactId>
-			<version>master-SNAPSHOT</version>
-		</dependency>
-
-		<!-- <dependency> <groupId>com.Ben12345rocks</groupId> <artifactId>AdvancedCore</artifactId> 
-			<version>LATEST</version> <scope>compile</scope> </dependency> -->
-		<dependency>
 			<groupId>org.spigotmc</groupId>
 			<artifactId>spigot-api</artifactId>
 			<version>1.16.4-R0.1-SNAPSHOT</version>
@@ -274,4 +266,50 @@
 			<scope>provided</scope>
 		</dependency>
 	</dependencies>
+	<profiles>
+		<profile>
+			<id>prod</id>
+			<activation>
+				<activeByDefault>true</activeByDefault>
+			</activation>
+			<properties>
+				<build.profile.id>prod</build.profile.id>
+			</properties>
+			<dependencies>
+				<dependency>
+					<groupId>com.github.bencodez</groupId>
+					<artifactId>advancedcore</artifactId>
+					<version>master-SNAPSHOT</version>
+				</dependency>
+			</dependencies>
+		</profile>
+		<profile>
+			<id>prod2</id>
+			<properties>
+				<build.profile.id>prod2</build.profile.id>
+			</properties>
+			<dependencies>
+				<dependency>
+					<groupId>com.bencodez</groupId>
+					<artifactId>AdvancedCore</artifactId>
+					<version>LATEST</version>
+					<scope>compile</scope>
+				</dependency>
+			</dependencies>
+		</profile>
+		<profile>
+			<id>dev</id>
+			<properties>
+				<build.profile.id>dev</build.profile.id>
+			</properties>
+			<dependencies>
+				<dependency>
+					<groupId>com.bencodez</groupId>
+					<artifactId>AdvancedCore</artifactId>
+					<version>LATEST</version>
+					<scope>compile</scope>
+				</dependency>
+			</dependencies>
+		</profile>
+	</profiles>
 </project>
