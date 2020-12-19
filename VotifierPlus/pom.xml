@@ -5,7 +5,7 @@
 
 	<groupId>com.ben12345rocks</groupId>
 	<artifactId>VotifierPlus</artifactId>
-	<version>1.0.1</version>
+	<version>1.0.2</version>
 	<packaging>jar</packaging>
 
 	<name>VotifierPlus</name>
