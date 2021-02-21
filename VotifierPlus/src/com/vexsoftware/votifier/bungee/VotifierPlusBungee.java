@@ -53,6 +53,7 @@ public class VotifierPlusBungee extends Plugin {
 
 	public void reload() {
 		config.load();
+		loadVoteReceiver();
 	}
 
 	private void loadVoteReceiver() {

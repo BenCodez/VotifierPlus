@@ -51,11 +51,11 @@ public class Config {
 	}
 
 	public String getHost() {
-		return getData().getString("Host", "");
+		return getData().getString("host", "");
 	}
 
 	public int getPort() {
-		return getData().getInt("Port");
+		return getData().getInt("port");
 	}
 
 	public boolean getDebug() {

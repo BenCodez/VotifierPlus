@@ -31,19 +31,19 @@ public class VotifierPlusCommand extends Command {
 						PublicKey publicKey = bungee.getKeyPair().getPublic();
 						String serverIP = bungee.getConfig().getHost();
 						int serverPort = bungee.getConfig().getPort();
-						if (serverIP.length() != 0) {
-							String VoteString = "VOTE\n" + args[2] + "\n" + args[1] + "\n" + "Address" + "\n"
-									+ "TestVote" + "\n";
 
-							SocketAddress sockAddr = new InetSocketAddress(serverIP, serverPort);
-							Socket socket1 = new Socket();
-							socket1.connect(sockAddr, 1000);
-							OutputStream socketOutputStream = socket1.getOutputStream();
-							socketOutputStream
-									.write(bungee.getVoteReceiver().encrypt(VoteString.getBytes(), publicKey));
-							socketOutputStream.close();
-							socket1.close();
-						}
+						String VoteString = "VOTE\n" + args[2] + "\n" + args[1] + "\n" + "Address" + "\n" + "TestVote"
+								+ "\n";
+
+						SocketAddress sockAddr = new InetSocketAddress(serverIP, serverPort);
+						Socket socket1 = new Socket();
+						socket1.connect(sockAddr, 1000);
+						OutputStream socketOutputStream = socket1.getOutputStream();
+						socketOutputStream.write(bungee.getVoteReceiver().encrypt(VoteString.getBytes(), publicKey));
+						socketOutputStream.close();
+						socket1.close();
+						sender.sendMessage(new TextComponent("Vote triggered"));
+
 					} catch (Exception e) {
 						e.printStackTrace();
 
