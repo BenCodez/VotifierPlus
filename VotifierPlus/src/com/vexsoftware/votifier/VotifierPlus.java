@@ -24,6 +24,7 @@ import java.net.ServerSocket;
 import java.security.KeyPair;
 import java.util.ArrayList;
 import java.util.Set;
+import java.util.concurrent.Callable;
 
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
@@ -81,8 +82,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		File rsaDirectory = new File(getDataFolder() + "/rsa");
 
 		/*
-		 * Create RSA directory and keys if it does not exist; otherwise, read
-		 * keys.
+		 * Create RSA directory and keys if it does not exist; otherwise, read keys.
 		 */
 		try {
 			if (!rsaDirectory.exists()) {
@@ -244,8 +244,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 				config.saveData();
 
 				/*
-				 * Remind hosted server admins to be sure they have the right
-				 * port number.
+				 * Remind hosted server admins to be sure they have the right port number.
 				 */
 				getLogger().info("------------------------------------------------------------------------------");
 				getLogger().info("Assigning Votifier to listen on an open port " + openPort
@@ -267,11 +266,11 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	}
 
 	private void metrics() {
-		BStatsMetrics metrics = new BStatsMetrics(this);
-		metrics.addCustomChart(new BStatsMetrics.SimplePie("Forwarding") {
+		BStatsMetrics metrics = new BStatsMetrics(this, 5807);
+		metrics.addCustomChart(new BStatsMetrics.SimplePie("Forwarding", new Callable<String>() {
 
 			@Override
-			public String getValue() {
+			public String call() throws Exception {
 				int amount = 0;
 				for (String server : config.getServers()) {
 					if (config.getForwardingConfiguration(server).getBoolean("Enabled")) {
@@ -280,7 +279,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 				}
 				return "" + amount;
 			}
-		});
+		}));
 	}
 
 	@Override
