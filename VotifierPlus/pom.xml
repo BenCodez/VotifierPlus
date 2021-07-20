@@ -230,12 +230,8 @@
 			<url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
 		</repository>
 		<repository>
-			<id>jitpack.io</id>
-			<url>https://jitpack.io</url>
-			<snapshots>
-				<enabled>true</enabled>
-				<updatePolicy>always</updatePolicy>
-			</snapshots>
+			<id>bencodez repo</id>
+			<url>https://nexus.bencodez.com/repository/maven-releases/</url>
 		</repository>
 		<repository>
 			<id>bungeecord-repo</id>
@@ -271,6 +267,16 @@
 			<properties>
 				<build.profile.id>prod</build.profile.id>
 			</properties>
+			<repositories>
+				<repository>
+					<id>jitpack.io</id>
+					<url>https://jitpack.io</url>
+					<snapshots>
+						<enabled>true</enabled>
+						<updatePolicy>always</updatePolicy>
+					</snapshots>
+				</repository>
+			</repositories>
 			<dependencies>
 				<dependency>
 					<groupId>com.github.bencodez</groupId>
