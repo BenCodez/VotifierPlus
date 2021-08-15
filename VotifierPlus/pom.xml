@@ -231,7 +231,7 @@
 		</repository>
 		<repository>
 			<id>bencodez repo</id>
-			<url>https://nexus.bencodez.com/repository/maven-releases/</url>
+			<url>https://nexus.bencodez.com/repository/maven-public/</url>
 		</repository>
 		<repository>
 			<id>bungeecord-repo</id>
@@ -293,7 +293,7 @@
 			<dependencies>
 				<dependency>
 					<groupId>com.bencodez</groupId>
-					<artifactId>AdvancedCore</artifactId>
+					<artifactId>advancedcore</artifactId>
 					<version>LATEST</version>
 					<scope>compile</scope>
 				</dependency>
@@ -307,7 +307,7 @@
 			<dependencies>
 				<dependency>
 					<groupId>com.bencodez</groupId>
-					<artifactId>AdvancedCore</artifactId>
+					<artifactId>advancedcore</artifactId>
 					<version>LATEST</version>
 					<scope>compile</scope>
 				</dependency>
