@@ -38,7 +38,7 @@ public class CommandLoader {
 		ChatColor hoverColor = ChatColor.AQUA;
 		for (CommandHandler cmdHandle : plugin.getCommands()) {
 			if (!requirePerms || cmdHandle.hasPerm(sender)) {
-				unsorted.put(cmdHandle.getHelpLineCommand("/votifierhelp"),
+				unsorted.put(cmdHandle.getHelpLineCommand("/votifierplus"),
 						cmdHandle.getHelpLine("/votifierplus", "&6%Command% - &6%HelpMessage%", hoverColor));
 			}
 		}
