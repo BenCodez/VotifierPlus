@@ -222,7 +222,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 	@Override
 	public void onPreLoad() {
-		VotifierPlus.instance = this;
+		instance = this;
 
 		config = new Config(this);
 		config.setup();
@@ -255,8 +255,8 @@ public class VotifierPlus extends AdvancedCorePlugin {
 				getLogger().info("------------------------------------------------------------------------------");
 
 			} catch (Exception ex) {
-				VotifierPlus.getInstance().getLogger().severe("Error creating configuration file");
-				VotifierPlus.getInstance().debug(ex);
+				getLogger().severe("Error creating configuration file");
+				debug(ex);
 			}
 		}
 		config.loadValues();

@@ -53,14 +53,13 @@ public class CommandLoader {
 	}
 
 	public void loadCommands() {
-		plugin.getCommands()
-				.add(new CommandHandler(new String[] { "Help" }, "VotifierPlus.Help", "Open help page") {
+		plugin.getCommands().add(new CommandHandler(new String[] { "Help" }, "VotifierPlus.Help", "Open help page") {
 
-					@Override
-					public void execute(CommandSender sender, String[] args) {
-						sendMessageJson(sender, helpText(sender));
-					}
-				});
+			@Override
+			public void execute(CommandSender sender, String[] args) {
+				sendMessageJson(sender, helpText(sender));
+			}
+		});
 		plugin.getCommands()
 				.add(new CommandHandler(new String[] { "Reload" }, "VotifierPlus.Reload", "Reload the plugin") {
 
