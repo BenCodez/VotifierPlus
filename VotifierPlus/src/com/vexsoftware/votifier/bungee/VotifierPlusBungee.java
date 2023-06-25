@@ -11,6 +11,7 @@ import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
 import lombok.Getter;
+import lombok.Setter;
 import net.md_5.bungee.api.plugin.Plugin;
 import net.md_5.bungee.config.Configuration;
 
@@ -21,6 +22,7 @@ public class VotifierPlusBungee extends Plugin {
 	@Getter
 	private Config config;
 	@Getter
+	@Setter
 	private KeyPair keyPair;
 
 	@Override
@@ -32,8 +34,7 @@ public class VotifierPlusBungee extends Plugin {
 		File rsaDirectory = new File(getDataFolder() + "/rsa");
 
 		/*
-		 * Create RSA directory and keys if it does not exist; otherwise, read
-		 * keys.
+		 * Create RSA directory and keys if it does not exist; otherwise, read keys.
 		 */
 		try {
 			if (!rsaDirectory.exists()) {

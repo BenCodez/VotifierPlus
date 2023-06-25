@@ -1,10 +1,14 @@
 package com.vexsoftware.votifier.bungee;
 
+import java.io.File;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.security.PublicKey;
+
+import com.vexsoftware.votifier.crypto.RSAIO;
+import com.vexsoftware.votifier.crypto.RSAKeygen;
 
 import net.md_5.bungee.api.CommandSender;
 import net.md_5.bungee.api.chat.TextComponent;
@@ -25,6 +29,24 @@ public class VotifierPlusCommand extends Command {
 				if (args[0].equalsIgnoreCase("reload")) {
 					bungee.reload();
 					sender.sendMessage(new TextComponent("Reloading VotifierPlus"));
+				}
+				if (args[0].equalsIgnoreCase("GenerateNewKeys")) {
+					File rsaDirectory = new File(bungee.getDataFolder() + File.separator + "rsa");
+
+					try {
+						for (File file : rsaDirectory.listFiles()) {
+							if (!file.isDirectory()) {
+								file.delete();
+							}
+						}
+						rsaDirectory.mkdir();
+						bungee.setKeyPair(RSAKeygen.generate(2048));
+						RSAIO.save(rsaDirectory, bungee.getKeyPair());
+					} catch (Exception ex) {
+						sender.sendMessage(new TextComponent("Failed to create keys"));
+						return;
+					}
+					sender.sendMessage(new TextComponent("New keys generated"));
 				}
 				if (args[0].equalsIgnoreCase("vote") && args.length > 2) {
 					try {
