@@ -74,8 +74,8 @@ public class CommandLoader {
 					}
 				});
 
-		plugin.getCommands().add(new CommandHandler(plugin, new String[] { "GenerateNewKeys" },
-				"VotifierPlus.GenerateNewKeys", "Generate new votifier keys", true, true) {
+		plugin.getCommands().add(new CommandHandler(plugin, new String[] { "GenerateKeys" },
+				"VotifierPlus.GenerateKeys", "Regenerate votifier keys", true, true) {
 
 			@Override
 			public void execute(CommandSender sender, String[] args) {

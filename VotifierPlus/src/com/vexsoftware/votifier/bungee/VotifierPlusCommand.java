@@ -30,7 +30,7 @@ public class VotifierPlusCommand extends Command {
 					bungee.reload();
 					sender.sendMessage(new TextComponent("Reloading VotifierPlus"));
 				}
-				if (args[0].equalsIgnoreCase("GenerateNewKeys")) {
+				if (args[0].equalsIgnoreCase("GenerateKeys")) {
 					File rsaDirectory = new File(bungee.getDataFolder() + File.separator + "rsa");
 
 					try {
