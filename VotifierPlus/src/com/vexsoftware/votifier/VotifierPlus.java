@@ -67,6 +67,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	private VoteReceiver voteReceiver;
 
 	/** The RSA key pair. */
+	@Setter
 	private KeyPair keyPair;
 
 	@Getter

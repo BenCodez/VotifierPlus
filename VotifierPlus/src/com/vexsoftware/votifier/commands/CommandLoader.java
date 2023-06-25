@@ -1,5 +1,6 @@
 package com.vexsoftware.votifier.commands;
 
+import java.io.File;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -13,6 +14,8 @@ import org.bukkit.command.CommandSender;
 
 import com.bencodez.advancedcore.api.command.CommandHandler;
 import com.vexsoftware.votifier.VotifierPlus;
+import com.vexsoftware.votifier.crypto.RSAIO;
+import com.vexsoftware.votifier.crypto.RSAKeygen;
 
 import net.md_5.bungee.api.ChatColor;
 import net.md_5.bungee.api.chat.TextComponent;
@@ -53,15 +56,16 @@ public class CommandLoader {
 	}
 
 	public void loadCommands() {
-		plugin.getCommands().add(new CommandHandler(new String[] { "Help" }, "VotifierPlus.Help", "Open help page") {
-
-			@Override
-			public void execute(CommandSender sender, String[] args) {
-				sendMessageJson(sender, helpText(sender));
-			}
-		});
 		plugin.getCommands()
-				.add(new CommandHandler(new String[] { "Reload" }, "VotifierPlus.Reload", "Reload the plugin") {
+				.add(new CommandHandler(plugin, new String[] { "Help" }, "VotifierPlus.Help", "Open help page") {
+
+					@Override
+					public void execute(CommandSender sender, String[] args) {
+						sendMessageJson(sender, helpText(sender));
+					}
+				});
+		plugin.getCommands()
+				.add(new CommandHandler(plugin, new String[] { "Reload" }, "VotifierPlus.Reload", "Reload the plugin") {
 
 					@Override
 					public void execute(CommandSender sender, String[] args) {
@@ -70,8 +74,32 @@ public class CommandLoader {
 					}
 				});
 
-		plugin.getCommands().add(new CommandHandler(new String[] { "Test", "(player)", "(Text)" }, "VotifierPlus.Test",
-				"Test votifier connection") {
+		plugin.getCommands().add(new CommandHandler(plugin, new String[] { "GenerateNewKeys" },
+				"VotifierPlus.GenerateNewKeys", "Generate new votifier keys", true, true) {
+
+			@Override
+			public void execute(CommandSender sender, String[] args) {
+				File rsaDirectory = new File(plugin.getDataFolder() + File.separator + "rsa");
+
+				try {
+					for (File file : rsaDirectory.listFiles()) {
+						if (!file.isDirectory()) {
+							file.delete();
+						}
+					}
+					rsaDirectory.mkdir();
+					plugin.setKeyPair(RSAKeygen.generate(2048));
+					RSAIO.save(rsaDirectory, plugin.getKeyPair());
+				} catch (Exception ex) {
+					sendMessage(sender, "&cFailed to create keys");
+					return;
+				}
+				sendMessage(sender, "&cNew keys generated");
+			}
+		});
+
+		plugin.getCommands().add(new CommandHandler(plugin, new String[] { "Test", "(player)", "(Text)" },
+				"VotifierPlus.Test", "Test votifier connection") {
 
 			@Override
 			public void execute(CommandSender sender, String[] args) {
