@@ -1,6 +1,6 @@
 name: ${project.name}
 main: com.vexsoftware.votifier.VotifierPlus
-version: ${project.version}
+version: "${project.version}"
 description: A plugin that gets notified when votes are made for the server on toplists.
 author: BenCodez
 api-version: 1.13
