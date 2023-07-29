@@ -9,5 +9,5 @@ Forwarding:
   server1:
     Enabled: false
     Host: ''
-    Port: ''
+    Port: 8193
     Key: ''
