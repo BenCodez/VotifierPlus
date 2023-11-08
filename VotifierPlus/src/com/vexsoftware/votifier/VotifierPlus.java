@@ -249,7 +249,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 				 */
 				getLogger().info("------------------------------------------------------------------------------");
 				getLogger().info("Assigning Votifier to listen on an open port " + openPort
-						+ ". If you are hosting Craftbukkit on a");
+						+ ". If you are hosting server on a");
 				getLogger().info("shared server please check with your hosting provider to verify that this port");
 				getLogger().info("is available for your use. Chances are that your hosting provider will assign");
 				getLogger().info("a different port, which you need to specify in config.yml");
@@ -296,9 +296,8 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		loadVoteReceiver();
 	}
 
+	@SuppressWarnings("deprecation")
 	public void updateAdvancedCoreHook() {
-		// getJavascriptEngine().put("VotingPlugin", this);
-		// allowDownloadingFromSpigot(15358);
 		setConfigData(config.getData());
 		setLoadRewards(false);
 		setLoadServerData(false);

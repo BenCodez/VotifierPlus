@@ -203,7 +203,7 @@ public abstract class VoteReceiver extends Thread {
 
 							} catch (Exception e) {
 								log("Failed to send vote to " + server + "(" + serverIP + ":" + serverPort + "): "
-										+ vote.toString() + ", ignore this if server is offline");
+										+ vote.toString() + ", ignore this if server is offline. Enable debug to see the stacktrace");
 								debug(e);
 							}
 						}
