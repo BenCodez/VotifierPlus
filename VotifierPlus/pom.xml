@@ -27,6 +27,7 @@
 				<includes>
 					<include>plugin.yml</include>
 					<include>bungee.yml</include>
+					<include>votifierplusversion.yml</include>
 				</includes>
 			</resource>
 			<resource>
@@ -126,6 +127,10 @@
 						<relocation>
 							<pattern>com.zaxxer.hikari</pattern>
 							<shadedPattern>${project.groupId}.${project.artifactId}.hikari</shadedPattern>
+						</relocation>
+						<relocation>
+							<pattern>org.bstats</pattern>
+							<shadedPattern>${project.groupId}.votingplugin.bstats</shadedPattern>
 						</relocation>
 					</relocations>
 				</configuration>
@@ -232,6 +237,11 @@
 			<id>bungeecord-repo</id>
 			<url>https://oss.sonatype.org/content/repositories/snapshots</url>
 		</repository>
+		<repository>
+			<id>velocity</id>
+			<url>https://nexus.velocitypowered.com/repository/maven-public/</url>
+		</repository>
+
 	</repositories>
 	<dependencies>
 		<dependency>
@@ -251,6 +261,18 @@
 			<artifactId>bungeecord-api</artifactId>
 			<version>LATEST</version>
 			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.velocitypowered</groupId>
+			<artifactId>velocity-api</artifactId>
+			<version>3.1.1</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.bstats</groupId>
+			<artifactId>bstats-velocity</artifactId>
+			<version>3.0.2</version>
+			<scope>compile</scope>
 		</dependency>
 	</dependencies>
 	<profiles>
