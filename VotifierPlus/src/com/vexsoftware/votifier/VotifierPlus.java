@@ -19,15 +19,22 @@
 package com.vexsoftware.votifier;
 
 import java.io.File;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.URL;
+import java.security.CodeSource;
 import java.security.KeyPair;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.YamlConfiguration;
 
 import com.bencodez.advancedcore.AdvancedCorePlugin;
 import com.bencodez.advancedcore.api.command.CommandHandler;
@@ -73,8 +80,18 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	@Getter
 	private ArrayList<CommandHandler> commands = new ArrayList<CommandHandler>();
 
+	@Getter
+	private String buildNumber = "NOTSET";
+
+	@Getter
+	private String profile;
+
+	@Getter
+	private String time;
+
 	@Override
 	public void onPostLoad() {
+		loadVersionFile();
 
 		getCommand("votifierplus").setExecutor(new CommandVotifierPlus(this));
 		getCommand("votifierplus").setTabCompleter(new VotifierPlusTabCompleter());
@@ -110,6 +127,11 @@ public class VotifierPlus extends AdvancedCorePlugin {
 				new CheckUpdate(instance).checkUpdate();
 			}
 		}, 5l);
+		
+		if (getProfile().contains("dev")) {
+			getLogger().info(
+					"Using dev build, this is not a stable build, use at your own risk. Build number: " + buildNumber);
+		}
 	}
 
 	private void loadVoteReceiver() {
@@ -263,7 +285,6 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		config.loadValues();
 
 		updateAdvancedCoreHook();
-
 	}
 
 	private void metrics() {
@@ -281,6 +302,15 @@ public class VotifierPlus extends AdvancedCorePlugin {
 				return "" + amount;
 			}
 		}));
+		if (!getBuildNumber().equals("NOTSET")) {
+			metrics.addCustomChart(new BStatsMetrics.SimplePie("dev_build_number", new Callable<String>() {
+
+				@Override
+				public String call() throws Exception {
+					return "" + getBuildNumber();
+				}
+			}));
+		}
 	}
 
 	@Override
@@ -302,6 +332,45 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		setLoadRewards(false);
 		setLoadServerData(false);
 		setLoadUserData(false);
+		setLoadGeyserAPI(false);
+		setLoadLuckPerms(false);
+	}
+
+	private YamlConfiguration getVersionFile() {
+		try {
+			CodeSource src = this.getClass().getProtectionDomain().getCodeSource();
+			if (src != null) {
+				URL jar = src.getLocation();
+				ZipInputStream zip = null;
+				zip = new ZipInputStream(jar.openStream());
+				while (true) {
+					ZipEntry e = zip.getNextEntry();
+					if (e != null) {
+						String name = e.getName();
+						if (name.equals("votifierplusversion.yml")) {
+							Reader defConfigStream = new InputStreamReader(zip);
+							if (defConfigStream != null) {
+								YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(defConfigStream);
+								defConfigStream.close();
+								return defConfig;
+							}
+						}
+					}
+				}
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+
+	private void loadVersionFile() {
+		YamlConfiguration conf = getVersionFile();
+		if (conf != null) {
+			time = conf.getString("time", "");
+			profile = conf.getString("profile", "");
+			buildNumber = conf.getString("buildnumber", "NOTSET");
+		}
 	}
 
 }
