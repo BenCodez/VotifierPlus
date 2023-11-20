@@ -29,6 +29,8 @@ import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.vexsoftware.votifier.ForwardServer;
+import com.vexsoftware.votifier.crypto.RSAIO;
+import com.vexsoftware.votifier.crypto.RSAKeygen;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
@@ -52,7 +54,7 @@ public class VotifierPlusVelocity {
 	@Getter
 	private Path dataDirectory;
 	private final Metrics.Factory metricsFactory;
-	private Object buildNumber;
+	private Object buildNumber = "NOTSET";
 	private String version;
 	private File versionFile;
 
@@ -148,6 +150,22 @@ public class VotifierPlusVelocity {
 				.aliases("votifierplus", "votifierplusvelocity").build();
 		server.getCommandManager().register(meta, new VotifierPlusVelocityCommand(this));
 		loadVoteReceiver();
+		File rsaDirectory = new File(dataDirectory.toFile(), "rsa");
+		/*
+		 * Create RSA directory and keys if it does not exist; otherwise, read keys.
+		 */
+		try {
+			if (!rsaDirectory.exists()) {
+				rsaDirectory.mkdir();
+				keyPair = RSAKeygen.generate(2048);
+				RSAIO.save(rsaDirectory, keyPair);
+			} else {
+				keyPair = RSAIO.load(rsaDirectory);
+			}
+		} catch (Exception ex) {
+			logger.error("Error reading configuration file or RSA keys");
+			return;
+		}
 
 		try {
 			getVersionFile();
@@ -192,7 +210,7 @@ public class VotifierPlusVelocity {
 
 				@Override
 				public String getVersion() {
-					return this.getVersion();
+					return version;
 				}
 
 				@Override
@@ -213,7 +231,7 @@ public class VotifierPlusVelocity {
 
 				@Override
 				public KeyPair getKeyPair() {
-					return getKeyPair();
+					return keyPair;
 				}
 
 				@Override
