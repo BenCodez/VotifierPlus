@@ -1,23 +1,24 @@
 /*
  * Copyright (C) 2012 Vex Software LLC
  * This file is part of Votifier.
- * 
+ *
  * Votifier is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * Votifier is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with Votifier.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 package com.vexsoftware.votifier;
 
+import com.bencodez.advancedcore.folialib.FoliaLib;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -29,6 +30,7 @@ import java.security.KeyPair;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -55,7 +57,7 @@ import lombok.Setter;
 
 /**
  * The main Votifier plugin class.
- * 
+ *
  * @author Blake Beaupain
  * @author Kramer Campbell
  */
@@ -63,6 +65,9 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 	/** The Votifier instance. */
 	private static VotifierPlus instance;
+
+    @Getter
+    private FoliaLib foliaLib;
 
 	public Config config;
 
@@ -91,6 +96,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 	@Override
 	public void onPostLoad() {
+        this.foliaLib = new FoliaLib(this);
 		loadVersionFile();
 
 		getCommand("votifierplus").setExecutor(new CommandVotifierPlus(this));
@@ -120,14 +126,14 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 		metrics();
 
-		Bukkit.getScheduler().runTaskLaterAsynchronously(instance, new Runnable() {
+        this.foliaLib.getImpl().runLaterAsync(new Runnable() {
 
-			@Override
-			public void run() {
-				new CheckUpdate(instance).checkUpdate();
-			}
-		}, 5l);
-		
+            @Override
+            public void run() {
+                new CheckUpdate(instance).checkUpdate();
+            }
+        }, 250, TimeUnit.MILLISECONDS);
+
 		if (getProfile().contains("dev")) {
 			getLogger().info(
 					"Using dev build, this is not a stable build, use at your own risk. Build number: " + buildNumber);
@@ -187,11 +193,11 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 				@Override
 				public void callEvent(Vote vote) {
-					getServer().getScheduler().scheduleSyncDelayedTask(instance, new Runnable() {
-						public void run() {
-							Bukkit.getServer().getPluginManager().callEvent(new VotifierEvent(vote));
-						}
-					});
+                    foliaLib.getImpl().runAsync(new Runnable() {
+                        public void run() {
+                            Bukkit.getServer().getPluginManager().callEvent(new VotifierEvent(vote));
+                        }
+                    });
 				}
 			};
 			voteReceiver.start();
@@ -218,7 +224,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 	/**
 	 * Gets the instance.
-	 * 
+	 *
 	 * @return The instance
 	 */
 	public static VotifierPlus getInstance() {
@@ -227,7 +233,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 	/**
 	 * Gets the vote receiver.
-	 * 
+	 *
 	 * @return The vote receiver
 	 */
 	public VoteReceiver getVoteReceiver() {
@@ -236,7 +242,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 	/**
 	 * Gets the keyPair.
-	 * 
+	 *
 	 * @return The keyPair
 	 */
 	public KeyPair getKeyPair() {
