@@ -1,0 +1,78 @@
+import org.apache.tools.ant.filters.ReplaceTokens
+
+plugins {
+    id 'java'
+    id "io.freefair.lombok" version "8.4"
+    id "com.github.johnrengelman.shadow" version "8.1.1"
+}
+
+group 'net.simplyvanilla'
+version '0.1.0'
+
+java {
+    toolchain.languageVersion.set(JavaLanguageVersion.of(17))
+}
+
+compileJava.options.encoding = 'UTF-8'
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
+repositories {
+    mavenCentral()
+
+    maven {
+        url 'https://repo.papermc.io/repository/maven-public/'
+    }
+    maven {
+        url 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/'
+    }
+    maven {
+        url 'https://nexus.bencodez.com/repository/maven-public/'
+    }
+    maven {
+        url 'https://oss.sonatype.org/content/repositories/snapshots'
+    }
+    maven {
+        url 'https://nexuslite.gcnt.net/repos/other/'
+    }
+}
+
+dependencies {
+    compileOnly 'io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT'
+    compileOnly 'net.md-5:bungeecord-api:1.20-R0.1-SNAPSHOT'
+    compileOnly 'com.velocitypowered:velocity-api:3.1.1'
+
+    implementation 'org.bstats:bstats-velocity:3.0.2'
+    implementation 'com.bencodez:advancedcore:3.7.3'
+}
+
+processResources {
+    duplicatesStrategy = 'include'
+
+    from(sourceSets.main.resources.srcDirs) {
+        filter ReplaceTokens, tokens: [version: version]
+    }
+}
+
+shadowJar {
+    archiveClassifier.set('')
+    relocate 'com.bencodez.advancedcore', 'net.simplyvanilla.dependency.advancedcore'
+    relocate 'net.pl3x.bukkit.chatapi', 'net.simplyvanilla.dependency.chatapi'
+    relocate 'me.mrten.mysqlapi', 'net.simplyvanilla.dependency.mysqlapi'
+    relocate 'com.zaxxer.HikariCP', 'net.simplyvanilla.dependency.hikaricp'
+    relocate 'com.zaxxer.hikari', 'net.simplyvanilla.dependency.hikari'
+    relocate 'org.bstats', 'net.simplyvanilla.dependency.bstats'
+    minimize {
+        dependencies {
+            exclude('com.google')
+            exclude('org.apache')
+            exclude('org.json')
+            exclude('redis.clients')
+            exclude('LICENSE.txt')
+        }
+    }
+}
+
+build.dependsOn shadowJar

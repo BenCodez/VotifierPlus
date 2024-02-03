@@ -1,9 +1,0 @@
-Debug: false
-host: 0.0.0.0
-port: 8192
-Forwarding:
-  server1:
-    Enabled: false
-    Host: ''
-    Port: ''
-    Key: ''

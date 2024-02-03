@@ -1,0 +1,4 @@
+name: ${project.name}
+version: ${project.version}
+main: com.vexsoftware.votifier.bungee.VotifierPlusBungee
+author: BenCodez
