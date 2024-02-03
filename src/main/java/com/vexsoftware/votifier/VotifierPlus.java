@@ -115,14 +115,6 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		loadVoteReceiver();
 
 		metrics();
-
-        this.foliaLib.getImpl().runLaterAsync(new Runnable() {
-
-            @Override
-            public void run() {
-                new CheckUpdate(instance).checkUpdate();
-            }
-        }, 250, TimeUnit.MILLISECONDS);
 	}
 
 	private void loadVoteReceiver() {
