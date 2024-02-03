@@ -85,19 +85,9 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	@Getter
 	private ArrayList<CommandHandler> commands = new ArrayList<CommandHandler>();
 
-	@Getter
-	private String buildNumber = "NOTSET";
-
-	@Getter
-	private String profile;
-
-	@Getter
-	private String time;
-
 	@Override
 	public void onPostLoad() {
         this.foliaLib = new FoliaLib(this);
-		loadVersionFile();
 
 		getCommand("votifierplus").setExecutor(new CommandVotifierPlus(this));
 		getCommand("votifierplus").setTabCompleter(new VotifierPlusTabCompleter());
@@ -133,11 +123,6 @@ public class VotifierPlus extends AdvancedCorePlugin {
                 new CheckUpdate(instance).checkUpdate();
             }
         }, 250, TimeUnit.MILLISECONDS);
-
-		if (getProfile().contains("dev")) {
-			getLogger().info(
-					"Using dev build, this is not a stable build, use at your own risk. Build number: " + buildNumber);
-		}
 	}
 
 	private void loadVoteReceiver() {
@@ -308,15 +293,6 @@ public class VotifierPlus extends AdvancedCorePlugin {
 				return "" + amount;
 			}
 		}));
-		if (!getBuildNumber().equals("NOTSET")) {
-			metrics.addCustomChart(new BStatsMetrics.SimplePie("dev_build_number", new Callable<String>() {
-
-				@Override
-				public String call() throws Exception {
-					return "" + getBuildNumber();
-				}
-			}));
-		}
 	}
 
 	@Override
@@ -340,43 +316,6 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		setLoadUserData(false);
 		setLoadGeyserAPI(false);
 		setLoadLuckPerms(false);
-	}
-
-	private YamlConfiguration getVersionFile() {
-		try {
-			CodeSource src = this.getClass().getProtectionDomain().getCodeSource();
-			if (src != null) {
-				URL jar = src.getLocation();
-				ZipInputStream zip = null;
-				zip = new ZipInputStream(jar.openStream());
-				while (true) {
-					ZipEntry e = zip.getNextEntry();
-					if (e != null) {
-						String name = e.getName();
-						if (name.equals("votifierplusversion.yml")) {
-							Reader defConfigStream = new InputStreamReader(zip);
-							if (defConfigStream != null) {
-								YamlConfiguration defConfig = YamlConfiguration.loadConfiguration(defConfigStream);
-								defConfigStream.close();
-								return defConfig;
-							}
-						}
-					}
-				}
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		return null;
-	}
-
-	private void loadVersionFile() {
-		YamlConfiguration conf = getVersionFile();
-		if (conf != null) {
-			time = conf.getString("time", "");
-			profile = conf.getString("profile", "");
-			buildNumber = conf.getString("buildnumber", "NOTSET");
-		}
 	}
 
 }
