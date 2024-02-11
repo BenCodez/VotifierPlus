@@ -120,14 +120,14 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 		metrics();
 
-		Bukkit.getScheduler().runTaskLaterAsynchronously(instance, new Runnable() {
+		getBukkitScheduler().runTaskLaterAsynchronously(this, new Runnable() {
 
 			@Override
 			public void run() {
 				new CheckUpdate(instance).checkUpdate();
 			}
-		}, 5l);
-		
+		}, 5);
+
 		if (getProfile().contains("dev")) {
 			getLogger().info(
 					"Using dev build, this is not a stable build, use at your own risk. Build number: " + buildNumber);
@@ -187,7 +187,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 				@Override
 				public void callEvent(Vote vote) {
-					getServer().getScheduler().scheduleSyncDelayedTask(instance, new Runnable() {
+					instance.getBukkitScheduler().executeOrScheduleSync(instance, new Runnable() {
 						public void run() {
 							Bukkit.getServer().getPluginManager().callEvent(new VotifierEvent(vote));
 						}

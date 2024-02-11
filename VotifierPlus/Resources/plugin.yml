@@ -5,6 +5,7 @@ description: A plugin that gets notified when votes are made for the server on t
 author: BenCodez
 api-version: 1.13
 softdepend: [SuperVanish, PremiumVanish]
+folia-supported: true
 commands:
   votifierplus:
     description: main command
