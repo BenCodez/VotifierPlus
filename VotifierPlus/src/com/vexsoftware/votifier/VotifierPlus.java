@@ -320,9 +320,9 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 	@Override
 	public void reload() {
+		voteReceiver.shutdown();
 		config.reloadData();
 		updateAdvancedCoreHook();
-		voteReceiver.shutdown();
 		loadVoteReceiver();
 	}
 
