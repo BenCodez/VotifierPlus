@@ -334,6 +334,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		setLoadUserData(false);
 		setLoadGeyserAPI(false);
 		setLoadLuckPerms(false);
+		setLoadSkullHandler(false);
 	}
 
 	private YamlConfiguration getVersionFile() {
