@@ -1,9 +1,11 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
 
 	<groupId>com.bencodez</groupId>
 	<artifactId>VotifierPlus</artifactId>
-	<version>1.2</version>
+	<version>1.2.1</version>
 	<packaging>jar</packaging>
 	<name>VotifierPlus</name>
 	<properties>
@@ -105,33 +107,41 @@
 				<configuration>
 					<shadedArtifactAttached>false</shadedArtifactAttached>
 					<relocations>
-						<!-- Lets relocate the shaded API so we dont cause any conflicts with 
+						<!-- Lets relocate the shaded API so we dont cause any
+						conflicts with 
 							other plugins -->
 						<relocation>
 							<pattern>com.bencodez.advancedcore</pattern>
-							<shadedPattern>${project.groupId}.${project.artifactId}.advancedcore</shadedPattern>
+							<shadedPattern>
+								${project.groupId}.${project.artifactId}.advancedcore</shadedPattern>
 						</relocation>
-						<!-- Lets relocate the shaded API so we dont cause any conflicts with 
+						<!-- Lets relocate the shaded API so we dont cause any
+						conflicts with 
 							other plugins -->
 						<relocation>
 							<pattern>net.pl3x.bukkit.chatapi</pattern>
-							<shadedPattern>${project.groupId}.${project.artifactId}</shadedPattern>
+							<shadedPattern>
+								${project.groupId}.${project.artifactId}</shadedPattern>
 						</relocation>
 						<relocation>
 							<pattern>me.mrten.mysqlapi</pattern>
-							<shadedPattern>${project.groupId}.${project.artifactId}.mysqlapi</shadedPattern>
+							<shadedPattern>
+								${project.groupId}.${project.artifactId}.mysqlapi</shadedPattern>
 						</relocation>
 						<relocation>
 							<pattern>com.zaxxer.HikariCP</pattern>
-							<shadedPattern>${project.groupId}.${project.artifactId}.HikariCP</shadedPattern>
+							<shadedPattern>
+								${project.groupId}.${project.artifactId}.HikariCP</shadedPattern>
 						</relocation>
 						<relocation>
 							<pattern>com.zaxxer.hikari</pattern>
-							<shadedPattern>${project.groupId}.${project.artifactId}.hikari</shadedPattern>
+							<shadedPattern>
+								${project.groupId}.${project.artifactId}.hikari</shadedPattern>
 						</relocation>
 						<relocation>
 							<pattern>org.bstats</pattern>
-							<shadedPattern>${project.groupId}.votingplugin.bstats</shadedPattern>
+							<shadedPattern>
+								${project.groupId}.votingplugin.bstats</shadedPattern>
 						</relocation>
 					</relocations>
 				</configuration>
@@ -143,7 +153,8 @@
 						</goals>
 						<configuration>
 							<artifactSet>
-								<!-- Lets exclude google code, because the server already has this 
+								<!-- Lets exclude google code, because the
+								server already has this 
 									code in it (guava, etc) -->
 								<excludes>
 									<exclude>com.google.*:*</exclude>
@@ -209,7 +220,8 @@
 							<goal>copy-resources</goal>
 						</goals>
 						<configuration>
-							<outputDirectory>${user.home}/Documents/Test Server/plugins</outputDirectory>
+							<outputDirectory>${user.home}/Documents/Test
+								Server/plugins</outputDirectory>
 							<resources>
 								<resource>
 									<directory>${basedir}/target</directory>
@@ -275,6 +287,12 @@
 			<version>3.0.2</version>
 			<scope>compile</scope>
 		</dependency>
+		<dependency>
+			<groupId>com.bencodez</groupId>
+			<artifactId>advancedcore</artifactId>
+			<version>LATEST</version>
+			<scope>compile</scope>
+		</dependency>
 	</dependencies>
 	<profiles>
 		<profile>
@@ -285,28 +303,12 @@
 			<properties>
 				<build.profile.id>prod</build.profile.id>
 			</properties>
-			<dependencies>
-				<dependency>
-					<groupId>com.bencodez</groupId>
-					<artifactId>advancedcore</artifactId>
-					<version>LATEST</version>
-					<scope>compile</scope>
-				</dependency>
-			</dependencies>
 		</profile>
 		<profile>
 			<id>dev</id>
 			<properties>
 				<build.profile.id>dev</build.profile.id>
 			</properties>
-			<dependencies>
-				<dependency>
-					<groupId>com.bencodez</groupId>
-					<artifactId>advancedcore</artifactId>
-					<version>LATEST</version>
-					<scope>compile</scope>
-				</dependency>
-			</dependencies>
 		</profile>
 	</profiles>
 </project>
