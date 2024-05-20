@@ -38,8 +38,8 @@ import org.bukkit.configuration.file.YamlConfiguration;
 
 import com.bencodez.advancedcore.AdvancedCorePlugin;
 import com.bencodez.advancedcore.api.command.CommandHandler;
-import com.bencodez.advancedcore.api.metrics.BStatsMetrics;
 import com.bencodez.advancedcore.api.updater.Updater;
+import com.bencodez.simpleapi.metrics.BStatsMetrics;
 import com.vexsoftware.votifier.commands.CommandLoader;
 import com.vexsoftware.votifier.commands.CommandVotifierPlus;
 import com.vexsoftware.votifier.commands.VotifierPlusTabCompleter;
