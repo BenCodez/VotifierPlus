@@ -5,7 +5,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 
-import com.bencodez.advancedcore.api.command.CommandHandler;
+import com.bencodez.simpleapi.command.CommandHandler;
 import com.vexsoftware.votifier.VotifierPlus;
 
 // TODO: Auto-generated Javadoc

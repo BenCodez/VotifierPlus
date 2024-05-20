@@ -220,7 +220,8 @@
 							<goal>copy-resources</goal>
 						</goals>
 						<configuration>
-							<outputDirectory>${user.home}/Documents/Test Server/plugins</outputDirectory>
+							<outputDirectory>${user.home}/Documents/Test
+								Server/plugins</outputDirectory>
 							<resources>
 								<resource>
 									<directory>${basedir}/target</directory>
@@ -288,8 +289,8 @@
 		</dependency>
 		<dependency>
 			<groupId>com.bencodez</groupId>
-			<artifactId>advancedcore</artifactId>
-			<version>LATEST</version>
+			<artifactId>simpleapi</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
 			<scope>compile</scope>
 		</dependency>
 	</dependencies>

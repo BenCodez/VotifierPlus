@@ -35,11 +35,16 @@ import java.util.zip.ZipInputStream;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.java.JavaPlugin;
 
-import com.bencodez.advancedcore.AdvancedCorePlugin;
-import com.bencodez.advancedcore.api.command.CommandHandler;
-import com.bencodez.advancedcore.api.updater.Updater;
+import com.bencodez.simpleapi.command.CommandHandler;
+import com.bencodez.simpleapi.command.TabCompleteHandle;
+import com.bencodez.simpleapi.command.TabCompleteHandler;
+import com.bencodez.simpleapi.debug.DebugLevel;
 import com.bencodez.simpleapi.metrics.BStatsMetrics;
+import com.bencodez.simpleapi.scheduler.BukkitScheduler;
+import com.bencodez.simpleapi.updater.Updater;
 import com.vexsoftware.votifier.commands.CommandLoader;
 import com.vexsoftware.votifier.commands.CommandVotifierPlus;
 import com.vexsoftware.votifier.commands.VotifierPlusTabCompleter;
@@ -59,12 +64,13 @@ import lombok.Setter;
  * @author Blake Beaupain
  * @author Kramer Campbell
  */
-public class VotifierPlus extends AdvancedCorePlugin {
+public class VotifierPlus extends JavaPlugin {
 
 	/** The Votifier instance. */
 	private static VotifierPlus instance;
 
-	public Config config;
+	@Getter
+	public Config configFile;
 
 	@Getter
 	@Setter
@@ -89,8 +95,51 @@ public class VotifierPlus extends AdvancedCorePlugin {
 	@Getter
 	private String time;
 
+	@Getter
+	private BukkitScheduler bukkitScheduler;
+
 	@Override
-	public void onPostLoad() {
+	public void onEnable() {
+		instance = this;
+		bukkitScheduler = new BukkitScheduler(instance);
+
+		configFile = new Config(this);
+		configFile.setup();
+
+		if (configFile.isJustCreated()) {
+			int openPort = 8192;
+			try {
+				ServerSocket s = new ServerSocket();
+				s.bind(new InetSocketAddress("0.0.0.0", 0));
+				openPort = s.getLocalPort();
+				s.close();
+			} catch (Exception e) {
+
+			}
+			try {
+				// First time run - do some initialization.
+				getLogger().info("Configuring Votifier for the first time...");
+				configFile.getData().set("port", openPort);
+				configFile.saveData();
+
+				/*
+				 * Remind hosted server admins to be sure they have the right port number.
+				 */
+				getLogger().info("------------------------------------------------------------------------------");
+				getLogger().info("Assigning Votifier to listen on an open port " + openPort
+						+ ". If you are hosting server on a");
+				getLogger().info("shared server please check with your hosting provider to verify that this port");
+				getLogger().info("is available for your use. Chances are that your hosting provider will assign");
+				getLogger().info("a different port, which you need to specify in config.yml");
+				getLogger().info("------------------------------------------------------------------------------");
+
+			} catch (Exception ex) {
+				getLogger().severe("Error creating configuration file");
+				debug(ex);
+			}
+		}
+		configFile.loadValues();
+
 		loadVersionFile();
 
 		getCommand("votifierplus").setExecutor(new CommandVotifierPlus(this));
@@ -134,9 +183,66 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		}
 	}
 
+	public void loadTabComplete() {
+		TabCompleteHandler.getInstance()
+				.addTabCompleteOption(new TabCompleteHandle("(Player)", new ArrayList<String>()) {
+
+					@Override
+					public void reload() {
+						ArrayList<String> list = new ArrayList<String>();
+						for (Player player : Bukkit.getOnlinePlayers()) {
+							list.add(player.getName());
+						}
+						setReplace(list);
+					}
+
+					@Override
+					public void updateReplacements() {
+						ArrayList<String> list = new ArrayList<String>();
+						for (Player player : Bukkit.getOnlinePlayers()) {
+							list.add(player.getName());
+						}
+						setReplace(list);
+					}
+				}.updateOnLoginLogout());
+
+		TabCompleteHandler.getInstance()
+				.addTabCompleteOption(new TabCompleteHandle("(PlayerExact)", new ArrayList<String>()) {
+
+					@Override
+					public void reload() {
+						ArrayList<String> list = new ArrayList<String>();
+						for (Player player : Bukkit.getOnlinePlayers()) {
+							list.add(player.getName());
+						}
+						setReplace(list);
+					}
+
+					@Override
+					public void updateReplacements() {
+						ArrayList<String> list = new ArrayList<String>();
+						for (Player player : Bukkit.getOnlinePlayers()) {
+							list.add(player.getName());
+						}
+						setReplace(list);
+					}
+				}.updateOnLoginLogout());
+
+		ArrayList<String> options = new ArrayList<String>();
+		options.add("True");
+		options.add("False");
+		TabCompleteHandler.getInstance().addTabCompleteOption("(Boolean)", options);
+		options = new ArrayList<String>();
+		TabCompleteHandler.getInstance().addTabCompleteOption("(List)", options);
+		TabCompleteHandler.getInstance().addTabCompleteOption("(String)", options);
+		TabCompleteHandler.getInstance().addTabCompleteOption("(Text)", options);
+		TabCompleteHandler.getInstance().addTabCompleteOption("(Number)", options);
+
+	}
+
 	private void loadVoteReceiver() {
 		try {
-			voteReceiver = new VoteReceiver(config.getHost(), config.getPort()) {
+			voteReceiver = new VoteReceiver(configFile.getHost(), configFile.getPort()) {
 
 				@Override
 				public void logWarning(String warn) {
@@ -160,12 +266,12 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 				@Override
 				public Set<String> getServers() {
-					return config.getServers();
+					return configFile.getServers();
 				}
 
 				@Override
 				public ForwardServer getServerData(String s) {
-					ConfigurationSection d = config.getForwardingConfiguration(s);
+					ConfigurationSection d = configFile.getForwardingConfiguration(s);
 					return new ForwardServer(d.getBoolean("Enabled"), d.getString("Host", ""), d.getInt("Port"),
 							d.getString("Key", ""));
 				}
@@ -187,7 +293,7 @@ public class VotifierPlus extends AdvancedCorePlugin {
 
 				@Override
 				public void callEvent(Vote vote) {
-					instance.getBukkitScheduler().executeOrScheduleSync(instance, new Runnable() {
+					getBukkitScheduler().executeOrScheduleSync(instance, new Runnable() {
 						public void run() {
 							Bukkit.getServer().getPluginManager().callEvent(new VotifierEvent(vote));
 						}
@@ -201,6 +307,43 @@ public class VotifierPlus extends AdvancedCorePlugin {
 			gracefulExit();
 			return;
 		}
+	}
+
+	public void debug(DebugLevel debugLevel, String debug) {
+		if (debugLevel.equals(DebugLevel.EXTRA)) {
+			debug = "ExtraDebug: " + debug;
+		} else if (debugLevel.equals(DebugLevel.INFO)) {
+			debug = "Debug: " + debug;
+		} else if (debugLevel.equals(DebugLevel.DEV)) {
+			debug = "Developer Debug: " + debug;
+		}
+
+		if (configFile.getDebug().isDebug(debugLevel)) {
+			getLogger().info(debug);
+		}
+	}
+
+	/**
+	 * Show exception in console if debug is on
+	 *
+	 * @param e Exception
+	 */
+	public void debug(Exception e) {
+		if (getConfigFile().getDebug().isDebug()) {
+			e.printStackTrace();
+		}
+	}
+
+	public void debug(String debug) {
+		debug(DebugLevel.INFO, debug);
+	}
+
+	public void devDebug(String debug) {
+		debug(DebugLevel.DEV, debug);
+	}
+
+	public void extraDebug(String debug) {
+		debug(DebugLevel.EXTRA, debug);
 	}
 
 	@Override
@@ -243,50 +386,6 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		return keyPair;
 	}
 
-	@Override
-	public void onPreLoad() {
-		instance = this;
-
-		config = new Config(this);
-		config.setup();
-
-		if (config.isJustCreated()) {
-			int openPort = 8192;
-			try {
-				ServerSocket s = new ServerSocket();
-				s.bind(new InetSocketAddress("0.0.0.0", 0));
-				openPort = s.getLocalPort();
-				s.close();
-			} catch (Exception e) {
-
-			}
-			try {
-				// First time run - do some initialization.
-				getLogger().info("Configuring Votifier for the first time...");
-				config.getData().set("port", openPort);
-				config.saveData();
-
-				/*
-				 * Remind hosted server admins to be sure they have the right port number.
-				 */
-				getLogger().info("------------------------------------------------------------------------------");
-				getLogger().info("Assigning Votifier to listen on an open port " + openPort
-						+ ". If you are hosting server on a");
-				getLogger().info("shared server please check with your hosting provider to verify that this port");
-				getLogger().info("is available for your use. Chances are that your hosting provider will assign");
-				getLogger().info("a different port, which you need to specify in config.yml");
-				getLogger().info("------------------------------------------------------------------------------");
-
-			} catch (Exception ex) {
-				getLogger().severe("Error creating configuration file");
-				debug(ex);
-			}
-		}
-		config.loadValues();
-
-		updateAdvancedCoreHook();
-	}
-
 	private void metrics() {
 		BStatsMetrics metrics = new BStatsMetrics(this, 5807);
 		metrics.addCustomChart(new BStatsMetrics.SimplePie("Forwarding", new Callable<String>() {
@@ -294,8 +393,8 @@ public class VotifierPlus extends AdvancedCorePlugin {
 			@Override
 			public String call() throws Exception {
 				int amount = 0;
-				for (String server : config.getServers()) {
-					if (config.getForwardingConfiguration(server).getBoolean("Enabled")) {
+				for (String server : configFile.getServers()) {
+					if (configFile.getForwardingConfiguration(server).getBoolean("Enabled")) {
 						amount++;
 					}
 				}
@@ -313,28 +412,10 @@ public class VotifierPlus extends AdvancedCorePlugin {
 		}
 	}
 
-	@Override
-	public void onUnLoad() {
-
-	}
-
-	@Override
 	public void reload() {
 		voteReceiver.shutdown();
-		config.reloadData();
-		updateAdvancedCoreHook();
+		configFile.reloadData();
 		loadVoteReceiver();
-	}
-
-	@SuppressWarnings("deprecation")
-	public void updateAdvancedCoreHook() {
-		setConfigData(config.getData());
-		setLoadRewards(false);
-		setLoadServerData(false);
-		setLoadUserData(false);
-		setLoadGeyserAPI(false);
-		setLoadLuckPerms(false);
-		setLoadSkullHandler(false);
 	}
 
 	private YamlConfiguration getVersionFile() {

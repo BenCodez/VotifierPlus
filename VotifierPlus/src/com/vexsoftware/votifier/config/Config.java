@@ -6,12 +6,13 @@ import java.util.Set;
 
 import org.bukkit.configuration.ConfigurationSection;
 
-import com.bencodez.advancedcore.api.yml.YMLFile;
-import com.bencodez.advancedcore.api.yml.annotation.AnnotationHandler;
-import com.bencodez.advancedcore.api.yml.annotation.ConfigDataBoolean;
-import com.bencodez.advancedcore.api.yml.annotation.ConfigDataInt;
-import com.bencodez.advancedcore.api.yml.annotation.ConfigDataKeys;
-import com.bencodez.advancedcore.api.yml.annotation.ConfigDataString;
+import com.bencodez.simpleapi.debug.DebugLevel;
+import com.bencodez.simpleapi.file.YMLFile;
+import com.bencodez.simpleapi.file.annotation.AnnotationHandler;
+import com.bencodez.simpleapi.file.annotation.ConfigDataBoolean;
+import com.bencodez.simpleapi.file.annotation.ConfigDataInt;
+import com.bencodez.simpleapi.file.annotation.ConfigDataKeys;
+import com.bencodez.simpleapi.file.annotation.ConfigDataString;
 import com.vexsoftware.votifier.VotifierPlus;
 
 import lombok.Getter;
@@ -25,6 +26,7 @@ public class Config extends YMLFile {
 
 	public void loadValues() {
 		new AnnotationHandler().load(getData(), this);
+		debug = DebugLevel.getDebug(debugLevelStr);
 	}
 
 	@Override
@@ -42,15 +44,32 @@ public class Config extends YMLFile {
 	@Setter
 	private int port = 8192;
 
-	@ConfigDataBoolean(path = "debug")
+	@ConfigDataString(path = "DebugLevel", options = { "NONE", "INFO", "EXTRA", "DEV" })
+	private String debugLevelStr = "NONE";
+
 	@Getter
 	@Setter
-	private boolean debug = false;
+	private DebugLevel debug = DebugLevel.NONE;
 
 	@ConfigDataKeys(path = "Forwarding")
 	@Getter
 	@Setter
 	private Set<String> servers = new HashSet<String>();
+
+	@Getter
+	@Setter
+	@ConfigDataString(path = "Format.NoPerms")
+	private String formatNoPerms = "&cYou do not have enough permission!";
+
+	@Getter
+	@Setter
+	@ConfigDataString(path = "Format.NotNumber")
+	private String formatNotNumber = "&cError on &6%arg%&c, number expected!";
+
+	@Getter
+	@Setter
+	@ConfigDataString(path = "Format.HelpLine")
+	private String helpLine = "&3&l%Command% - &3%HelpMessage%";
 
 	@ConfigDataBoolean(path = "DisableUpdateChecking")
 	@Getter

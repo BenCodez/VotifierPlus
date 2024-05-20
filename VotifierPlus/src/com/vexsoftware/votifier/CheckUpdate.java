@@ -1,6 +1,6 @@
 package com.vexsoftware.votifier;
 
-import com.bencodez.advancedcore.api.updater.Updater;
+import com.bencodez.simpleapi.updater.Updater;
 
 // TODO: Auto-generated Javadoc
 /**
@@ -25,7 +25,7 @@ public class CheckUpdate {
 	 * Check update.
 	 */
 	public void checkUpdate() {
-		if (plugin.config.isDisableUpdateChecking()) {
+		if (plugin.configFile.isDisableUpdateChecking()) {
 			return;
 		}
 		plugin.setUpdater(new Updater(plugin, 74040, false));

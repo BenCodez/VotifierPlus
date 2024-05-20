@@ -12,7 +12,8 @@ import java.util.HashMap;
 
 import org.bukkit.command.CommandSender;
 
-import com.bencodez.advancedcore.api.command.CommandHandler;
+import com.bencodez.simpleapi.command.CommandHandler;
+import com.bencodez.simpleapi.scheduler.BukkitScheduler;
 import com.vexsoftware.votifier.VotifierPlus;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
@@ -63,6 +64,31 @@ public class CommandLoader {
 					public void execute(CommandSender sender, String[] args) {
 						sendMessageJson(sender, helpText(sender));
 					}
+
+					@Override
+					public String getHelpLine() {
+						return plugin.getConfigFile().getHelpLine();
+					}
+
+					@Override
+					public void debug(String debug) {
+						plugin.debug(debug);
+					}
+
+					@Override
+					public String formatNotNumber() {
+						return plugin.getConfigFile().getFormatNotNumber();
+					}
+
+					@Override
+					public String formatNoPerms() {
+						return plugin.getConfigFile().getFormatNoPerms();
+					}
+
+					@Override
+					public BukkitScheduler getBukkitScheduler() {
+						return plugin.getBukkitScheduler();
+					}
 				});
 		plugin.getCommands()
 				.add(new CommandHandler(plugin, new String[] { "Reload" }, "VotifierPlus.Reload", "Reload the plugin") {
@@ -70,7 +96,32 @@ public class CommandLoader {
 					@Override
 					public void execute(CommandSender sender, String[] args) {
 						plugin.reload();
-						sendMessage(sender, "&cVotifierPlus " + plugin.getVersion() + " reloaded");
+						sendMessage(sender, "&cVotifierPlus " + plugin.getDescription().getVersion() + " reloaded");
+					}
+
+					@Override
+					public String getHelpLine() {
+						return plugin.getConfigFile().getHelpLine();
+					}
+
+					@Override
+					public void debug(String debug) {
+						plugin.debug(debug);
+					}
+
+					@Override
+					public String formatNotNumber() {
+						return plugin.getConfigFile().getFormatNotNumber();
+					}
+
+					@Override
+					public String formatNoPerms() {
+						return plugin.getConfigFile().getFormatNoPerms();
+					}
+
+					@Override
+					public BukkitScheduler getBukkitScheduler() {
+						return plugin.getBukkitScheduler();
 					}
 				});
 
@@ -96,6 +147,31 @@ public class CommandLoader {
 				}
 				sendMessage(sender, "&cNew keys generated");
 			}
+
+			@Override
+			public String getHelpLine() {
+				return plugin.getConfigFile().getHelpLine();
+			}
+
+			@Override
+			public void debug(String debug) {
+				plugin.debug(debug);
+			}
+
+			@Override
+			public String formatNotNumber() {
+				return plugin.getConfigFile().getFormatNotNumber();
+			}
+
+			@Override
+			public String formatNoPerms() {
+				return plugin.getConfigFile().getFormatNoPerms();
+			}
+
+			@Override
+			public BukkitScheduler getBukkitScheduler() {
+				return plugin.getBukkitScheduler();
+			}
 		});
 
 		plugin.getCommands().add(new CommandHandler(plugin, new String[] { "Test", "(player)", "(Text)" },
@@ -105,8 +181,8 @@ public class CommandLoader {
 			public void execute(CommandSender sender, String[] args) {
 				try {
 					PublicKey publicKey = plugin.getKeyPair().getPublic();
-					String serverIP = plugin.config.getHost();
-					int serverPort = plugin.config.getPort();
+					String serverIP = plugin.configFile.getHost();
+					int serverPort = plugin.configFile.getPort();
 					if (serverIP.length() != 0) {
 						String VoteString = "VOTE\n" + args[2] + "\n" + args[1] + "\n" + "Address" + "\n" + "TestVote"
 								+ "\n";
@@ -125,6 +201,32 @@ public class CommandLoader {
 				sendMessage(sender, "&cCheck console for test results");
 
 			}
+
+			@Override
+			public String getHelpLine() {
+				return plugin.getConfigFile().getHelpLine();
+			}
+
+			@Override
+			public void debug(String debug) {
+				plugin.debug(debug);
+			}
+
+			@Override
+			public String formatNotNumber() {
+				return plugin.getConfigFile().getFormatNotNumber();
+			}
+
+			@Override
+			public String formatNoPerms() {
+				return plugin.getConfigFile().getFormatNoPerms();
+			}
+
+			@Override
+			public BukkitScheduler getBukkitScheduler() {
+				return plugin.getBukkitScheduler();
+			}
+
 		});
 	}
 }
