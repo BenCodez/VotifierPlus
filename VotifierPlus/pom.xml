@@ -5,7 +5,7 @@
 
 	<groupId>com.bencodez</groupId>
 	<artifactId>VotifierPlus</artifactId>
-	<version>1.2.1</version>
+	<version>1.3</version>
 	<packaging>jar</packaging>
 	<name>VotifierPlus</name>
 	<properties>
@@ -107,6 +107,11 @@
 				<configuration>
 					<shadedArtifactAttached>false</shadedArtifactAttached>
 					<relocations>
+						<relocation>
+							<pattern>com.bencodez.simpleapi</pattern>
+							<shadedPattern>
+								${project.groupId}.votifierplus.simpleapi</shadedPattern>
+						</relocation>
 						<!-- Lets relocate the shaded API so we dont cause any
 						conflicts with 
 							other plugins -->
@@ -220,8 +225,7 @@
 							<goal>copy-resources</goal>
 						</goals>
 						<configuration>
-							<outputDirectory>${user.home}/Documents/Test
-								Server/plugins</outputDirectory>
+							<outputDirectory>${user.home}/Documents/Test Server/plugins</outputDirectory>
 							<resources>
 								<resource>
 									<directory>${basedir}/target</directory>

@@ -145,6 +145,7 @@ public class VotifierPlus extends JavaPlugin {
 		getCommand("votifierplus").setExecutor(new CommandVotifierPlus(this));
 		getCommand("votifierplus").setTabCompleter(new VotifierPlusTabCompleter());
 		CommandLoader.getInstance().loadCommands();
+		loadTabComplete();
 
 		File rsaDirectory = new File(getDataFolder() + "/rsa");
 
