@@ -64,12 +64,9 @@ public abstract class VoteReceiver extends Thread {
 	/**
 	 * Instantiates a new vote receiver
 	 * 
-	 * @param host
-	 *            The host to listen on
-	 * @param port
-	 *            The port to listen on
-	 * @throws Exception
-	 *             exception
+	 * @param host The host to listen on
+	 * @param port The port to listen on
+	 * @throws Exception exception
 	 */
 	public VoteReceiver(String host, int port) throws Exception {
 		super("Votifier I/O");
@@ -175,7 +172,7 @@ public abstract class VoteReceiver extends Thread {
 					log("Test vote received");
 				}
 
-				debug("Received vote record -> " + vote);
+				log("Received vote record -> " + vote);
 
 				for (String server : getServers()) {
 					ForwardServer forwardServer = getServerData(server);
@@ -203,7 +200,8 @@ public abstract class VoteReceiver extends Thread {
 
 							} catch (Exception e) {
 								log("Failed to send vote to " + server + "(" + serverIP + ":" + serverPort + "): "
-										+ vote.toString() + ", ignore this if server is offline. Enable debug to see the stacktrace");
+										+ vote.toString()
+										+ ", ignore this if server is offline. Enable debug to see the stacktrace");
 								debug(e);
 							}
 						}
@@ -228,7 +226,7 @@ public abstract class VoteReceiver extends Thread {
 				logWarning("matches the one you gave the server list.");
 				debug(ex);
 			} catch (Exception ex) {
-				logWarning("Exception caught while receiving a vote notification");
+				logWarning("Exception caught while receiving a vote notification: " + ex.getLocalizedMessage());
 				debug(ex);
 			}
 		}
@@ -250,8 +248,7 @@ public abstract class VoteReceiver extends Thread {
 	/**
 	 * Reads a string from a block of data.
 	 * 
-	 * @param data
-	 *            The data to read from
+	 * @param data The data to read from
 	 * @return The string
 	 */
 	private String readString(byte[] data, int offset) {
