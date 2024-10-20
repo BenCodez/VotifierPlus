@@ -225,7 +225,7 @@
 							<goal>copy-resources</goal>
 						</goals>
 						<configuration>
-							<outputDirectory>${user.home}/Documents/Test Server/plugins</outputDirectory>
+							<outputDirectory>${user.home}/Documents/Test_Server/plugins</outputDirectory>
 							<resources>
 								<resource>
 									<directory>${basedir}/target</directory>
