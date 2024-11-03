@@ -37,17 +37,27 @@ public class Vote {
 	/** The date and time of the vote. */
 	private String timeStamp;
 
+	public Vote(String serviceName, String username, String address, String timeStamp) {
+		this.serviceName = serviceName;
+		this.username = username;
+		this.address = address;
+		this.timeStamp = timeStamp;
+	}
+
+	public Vote() {
+
+	}
+
 	@Override
 	public String toString() {
-		return "Vote (from:" + serviceName + " username:" + username
-				+ " address:" + address + " timeStamp:" + timeStamp + ")";
+		return "Vote (from:" + serviceName + " username:" + username + " address:" + address + " timeStamp:" + timeStamp
+				+ ")";
 	}
 
 	/**
 	 * Sets the serviceName.
 	 * 
-	 * @param serviceName
-	 *            The new serviceName
+	 * @param serviceName The new serviceName
 	 */
 	public void setServiceName(String serviceName) {
 		this.serviceName = serviceName;
@@ -65,8 +75,7 @@ public class Vote {
 	/**
 	 * Sets the username.
 	 * 
-	 * @param username
-	 *            The new username
+	 * @param username The new username
 	 */
 	public void setUsername(String username) {
 		this.username = username.length() <= 16 ? username : username.substring(0, 16);
@@ -84,8 +93,7 @@ public class Vote {
 	/**
 	 * Sets the address.
 	 * 
-	 * @param address
-	 *            The new address
+	 * @param address The new address
 	 */
 	public void setAddress(String address) {
 		this.address = address;
@@ -103,8 +111,7 @@ public class Vote {
 	/**
 	 * Sets the time stamp.
 	 * 
-	 * @param timeStamp
-	 *            The new time stamp
+	 * @param timeStamp The new time stamp
 	 */
 	public void setTimeStamp(String timeStamp) {
 		this.timeStamp = timeStamp;
