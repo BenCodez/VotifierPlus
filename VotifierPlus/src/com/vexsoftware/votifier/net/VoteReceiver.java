@@ -1,3 +1,29 @@
+/*
+ * Copyright (C) 2012 Vex Software LLC
+ * This file is part of Votifier.
+ * 
+ * Votifier is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * 
+ * Votifier is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * along with Votifier.  If not, see <http://www.gnu.org/licenses/>.
+ * 
+ * @author Blake Beaupain
+ * @author Kramer Campbell
+ * 
+ * Modified to support handling of extra proxy protocol data (e.g. from HAProxy).
+ * If a PROXY protocol header is detected at the start of the connection, it is read and discarded.
+ * 
+ * Modified by: BenCodez
+ * 
+ */
 package com.vexsoftware.votifier.net;
 
 import java.io.BufferedWriter;
@@ -24,28 +50,6 @@ import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSA;
 import com.vexsoftware.votifier.model.Vote;
 
-/*
- * Copyright (C) 2012 Vex Software LLC
- * This file is part of Votifier.
- * 
- * Votifier is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- * 
- * Votifier is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License
- * along with Votifier.  If not, see <http://www.gnu.org/licenses/>.
- * 
- * 
- * Modified to support handling of extra proxy protocol data (e.g. from HAProxy).
- * If a PROXY protocol header is detected at the start of the connection, it is read and discarded.
- * 
- */
 public abstract class VoteReceiver extends Thread {
 
 	/** The host to listen on. */
@@ -58,7 +62,7 @@ public abstract class VoteReceiver extends Thread {
 	private boolean running = true;
 
 	/**
-	 * Instantiates a new vote receiver
+	 * Instantiates a new vote receiver.
 	 * 
 	 * @param host The host to listen on
 	 * @param port The port to listen on
@@ -119,49 +123,58 @@ public abstract class VoteReceiver extends Thread {
 		// Main loop.
 		while (running) {
 			try (Socket socket = server.accept()) {
-				// Set a timeout so we don't hang on slow connections.
-				socket.setSoTimeout(5000);
+				socket.setSoTimeout(5000); // Set timeout so we don't hang on slow connections.
 
-				// Wrap the raw input stream in a PushbackInputStream so that we can look ahead.
+				// Wrap the input stream so we can "peek" at the beginning.
 				PushbackInputStream in = new PushbackInputStream(socket.getInputStream(), 512);
 				BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
 
-				// --- PROXY protocol handling start ---
-				// Read the first 5 bytes to see if they match "PROXY"
-				byte[] probe = new byte[5];
-				int read = in.read(probe);
-				if (read == 5) {
-					String probeStr = new String(probe, "ASCII");
-					if (probeStr.equals("PROXY")) {
-						// We have a PROXY header. Read the rest of the header line until newline.
+				// Peek at the first few bytes.
+				byte[] peek = new byte[8];
+				int bytesPeeked = in.read(peek);
+				if (bytesPeeked > 0) {
+					String prefix = new String(peek, 0, bytesPeeked, "ASCII");
+					if (prefix.startsWith("PROXY")) {
+						// Method 1: PROXY protocol detected.
 						ByteArrayOutputStream headerBytes = new ByteArrayOutputStream();
-						headerBytes.write(probe, 0, 5);
+						headerBytes.write(peek, 0, bytesPeeked);
 						int b;
 						while ((b = in.read()) != -1) {
 							headerBytes.write(b);
-							if (b == '\n') {
+							if (b == '\n')
 								break;
-							}
 						}
 						String proxyHeader = headerBytes.toString("ASCII").trim();
-						debug("Discarded PROXY protocol header: " + proxyHeader);
+						debug("Discarded PROXY header: " + proxyHeader);
+					} else if (prefix.startsWith("CONNECT")) {
+						// Method 2: HTTP CONNECT detected.
+						// Push back the peeked bytes and read the entire CONNECT request.
+						in.unread(peek, 0, bytesPeeked);
+						String requestLine = readLine(in);
+						debug("Received CONNECT request: " + requestLine);
+						// Read and discard the rest of the headers.
+						String header;
+						while (!(header = readLine(in)).isEmpty()) {
+							debug("Discarding header: " + header);
+						}
+						// Respond to the CONNECT request.
+						writer.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+						writer.flush();
 					} else {
-						// Not a PROXY header; push back the bytes so that the vote block can be read in
-						// full.
-						in.unread(probe, 0, read);
+						// Not a known proxy wrapper; push back all peeked bytes.
+						in.unread(peek, 0, bytesPeeked);
 					}
-				} else if (read > 0) {
-					// Push back any bytes that were read.
-					in.unread(probe, 0, read);
 				}
-				// --- PROXY protocol handling end ---
 
-				// Send the version message to the client.
+				// At this point the input stream is positioned at the start of the actual vote
+				// data.
+				// Send our version message (unless the protocol already handled a CONNECT
+				// response).
 				writer.write("VOTIFIERPLUS " + getVersion());
 				writer.newLine();
 				writer.flush();
 
-				// Now read the vote block (expected to be 256 bytes).
+				// Read the 256-byte vote block.
 				byte[] block = new byte[256];
 				int totalRead = 0;
 				while (totalRead < block.length) {
@@ -174,14 +187,13 @@ public abstract class VoteReceiver extends Thread {
 				// Decrypt the block.
 				block = RSA.decrypt(block, getKeyPair().getPrivate());
 				int position = 0;
-				// Perform the opcode check.
+				// Check opcode.
 				String opcode = readString(block, position);
 				position += opcode.length() + 1;
 				if (!opcode.equals("VOTE")) {
-					// Something went wrong in RSA.
-					throw new Exception("Unable to decode RSA");
+					throw new Exception("Unable to decode RSA: invalid opcode " + opcode);
 				}
-				// Parse the block.
+				// Parse vote fields.
 				String serviceName = readString(block, position);
 				position += serviceName.length() + 1;
 				String username = readString(block, position);
@@ -202,6 +214,7 @@ public abstract class VoteReceiver extends Thread {
 				}
 				log("Received vote record -> " + vote);
 
+				// Forward the vote to all configured servers.
 				for (String server : getServers()) {
 					ForwardServer forwardServer = getServerData(server);
 					if (forwardServer.isEnabled()) {
@@ -232,9 +245,7 @@ public abstract class VoteReceiver extends Thread {
 						}
 					}
 				}
-				// Call event in a synchronized fashion to ensure that the
-				// custom event runs in the
-				// the main server thread, not this one.
+				// Call event on the main thread.
 				callEvent(vote);
 
 				// Clean up.
@@ -245,7 +256,7 @@ public abstract class VoteReceiver extends Thread {
 				logWarning("Protocol error. Ignoring packet - " + ex.getLocalizedMessage());
 				debug(ex);
 			} catch (BadPaddingException ex) {
-				logWarning("Unable to decrypt vote record. Make sure that that your public key");
+				logWarning("Unable to decrypt vote record. Make sure that your public key");
 				logWarning("matches the one you gave the server list.");
 				debug(ex);
 			} catch (Exception ex) {
@@ -253,6 +264,49 @@ public abstract class VoteReceiver extends Thread {
 				debug(ex);
 			}
 		}
+	}
+
+	/**
+	 * Reads a string from a block of data starting at the given offset.
+	 *
+	 * @param data   The data to read from.
+	 * @param offset The starting offset.
+	 * @return The read string.
+	 */
+	private String readString(byte[] data, int offset) {
+		StringBuilder builder = new StringBuilder();
+		for (int i = offset; i < data.length; i++) {
+			if (data[i] == '\n')
+				break; // Delimiter reached.
+			builder.append((char) data[i]);
+		}
+		return builder.toString();
+	}
+
+	/**
+	 * Reads a line (terminated by LF, with an optional preceding CR) from the input
+	 * stream. Returns an empty string if the line is empty.
+	 */
+	private String readLine(PushbackInputStream in) throws Exception {
+		ByteArrayOutputStream lineBuffer = new ByteArrayOutputStream();
+		int b;
+		boolean seenCR = false;
+		while ((b = in.read()) != -1) {
+			if (b == '\r') {
+				seenCR = true;
+				continue;
+			}
+			if (b == '\n') {
+				break;
+			}
+			if (seenCR) {
+				// CR was not followed by LF; push back b.
+				in.unread(b);
+				break;
+			}
+			lineBuffer.write(b);
+		}
+		return lineBuffer.toString("ASCII").trim();
 	}
 
 	public abstract ForwardServer getServerData(String s);
@@ -265,22 +319,5 @@ public abstract class VoteReceiver extends Thread {
 		Cipher cipher = Cipher.getInstance("RSA");
 		cipher.init(Cipher.ENCRYPT_MODE, key);
 		return cipher.doFinal(data);
-	}
-
-	/**
-	 * Reads a string from a block of data.
-	 * 
-	 * @param data   The data to read from
-	 * @param offset The offset at which to start reading
-	 * @return The string
-	 */
-	private String readString(byte[] data, int offset) {
-		StringBuilder builder = new StringBuilder();
-		for (int i = offset; i < data.length; i++) {
-			if (data[i] == '\n')
-				break; // Delimiter reached.
-			builder.append((char) data[i]);
-		}
-		return builder.toString();
 	}
 }
