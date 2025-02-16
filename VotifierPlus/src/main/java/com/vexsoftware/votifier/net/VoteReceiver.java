@@ -69,10 +69,13 @@ import com.vexsoftware.votifier.crypto.RSA;
 import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.model.Vote;
 
+import lombok.Getter;
+
 public abstract class VoteReceiver extends Thread {
 
 	private final String host;
 	private final int port;
+	@Getter
 	private ServerSocket server;
 	private boolean running = true;
 
@@ -90,7 +93,7 @@ public abstract class VoteReceiver extends Thread {
 		initialize();
 	}
 
-	private void initialize() throws Exception {
+	public void initialize() throws Exception {
 		try {
 			server = new ServerSocket();
 			server.bind(new InetSocketAddress(host, port));
