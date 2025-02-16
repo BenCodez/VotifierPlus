@@ -19,6 +19,7 @@
  * @author Kramer Campbell
  * 
  * Modified to support handling of extra proxy protocol data (e.g. from HAProxy).
+ * If a PROXY protocol header is detected at the start of the connection, it is read and discarded.
  * 
  * Modified by: BenCodez
  * 
@@ -60,17 +61,17 @@ public abstract class VoteReceiver extends Thread {
     /** The running flag. */
     private boolean running = true;
 
-    // The fixed signature for PROXY protocol v2 (12 bytes).
+    // PROXY protocol v2 fixed signature (first 12 bytes)
     private static final byte[] PROXY_V2_SIGNATURE = new byte[] {
         0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A
     };
 
     /**
      * Instantiates a new vote receiver.
-     *
+     * 
      * @param host The host to listen on
      * @param port The port to listen on
-     * @throws Exception exception
+     * @throws Exception if initialization fails
      */
     public VoteReceiver(String host, int port) throws Exception {
         super("Votifier I/O");
@@ -122,78 +123,78 @@ public abstract class VoteReceiver extends Thread {
         // Main loop.
         while (running) {
             try (Socket socket = server.accept()) {
-                socket.setSoTimeout(5000); // Don't hang on slow connections.
-
-                // Wrap input in a PushbackInputStream (512-byte buffer)
+                socket.setSoTimeout(5000); // Set timeout for slow connections.
                 PushbackInputStream in = new PushbackInputStream(socket.getInputStream(), 512);
                 BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
 
-                // Read up to 16 bytes to detect any extra protocol wrappers.
+                // Ensure we have at least 16 bytes for header detection.
                 byte[] headerPeek = new byte[16];
-                int bytesPeeked = in.read(headerPeek);
-                if (bytesPeeked > 0) {
-                    // Check for PROXY protocol v2 signature.
-                    if (bytesPeeked >= 12 && isProxyV2(headerPeek)) {
-                        // Read remaining 4 bytes (version/command and length fields) are already in headerPeek.
-                        // The last two bytes (offsets 14 and 15) indicate the length of the remaining header.
+                int bytesNeeded = 16;
+                int offset = 0;
+                while (bytesNeeded > 0) {
+                    int r = in.read(headerPeek, offset, bytesNeeded);
+                    if (r == -1) break;
+                    offset += r;
+                    bytesNeeded -= r;
+                }
+                if (offset > 0) {
+                    // Check for PROXY protocol v2.
+                    if (offset >= 12 && isProxyV2(headerPeek)) {
+                        // The length field is at positions 14 and 15.
                         int addrLength = ((headerPeek[14] & 0xFF) << 8) | (headerPeek[15] & 0xFF);
-                        // Calculate total v2 header length (16 + addrLength)
-                        int totalHeaderLength = 16 + addrLength;
+                        int totalV2HeaderLength = 16 + addrLength;
+                        // We have already read 16 bytes; now read the remaining addrLength bytes.
                         byte[] remaining = new byte[addrLength];
-                        int r = in.read(remaining);
-                        if (r != addrLength) {
+                        int readRemaining = 0;
+                        while (readRemaining < addrLength) {
+                            int r = in.read(remaining, readRemaining, addrLength - readRemaining);
+                            if (r == -1)
+                                break;
+                            readRemaining += r;
+                        }
+                        if (readRemaining != addrLength) {
                             throw new Exception("Incomplete PROXY protocol v2 header");
                         }
-                        debug("Discarded PROXY protocol v2 header (total " + totalHeaderLength + " bytes)");
+                        debug("Discarded PROXY protocol v2 header (total " + totalV2HeaderLength + " bytes)");
                     } else {
-                        String headerString = new String(headerPeek, 0, bytesPeeked, "ASCII");
+                        // Convert peeked data to string for further checks.
+                        String headerString = new String(headerPeek, 0, offset, "ASCII");
                         if (headerString.startsWith("PROXY")) {
-                            // PROXY protocol v1: push back and then handle as before.
-                            in.unread(headerPeek, 0, bytesPeeked);
-                            byte[] probe = new byte[5];
-                            int read = in.read(probe);
-                            if (read == 5) {
-                                String probeStr = new String(probe, "ASCII");
-                                if (probeStr.equals("PROXY")) {
-                                    ByteArrayOutputStream headerBytes = new ByteArrayOutputStream();
-                                    headerBytes.write(probe, 0, 5);
-                                    int b;
-                                    while ((b = in.read()) != -1) {
-                                        headerBytes.write(b);
-                                        if (b == '\n') {
-                                            break;
-                                        }
-                                    }
-                                    String proxyHeader = headerBytes.toString("ASCII").trim();
-                                    debug("Discarded PROXY (v1) header: " + proxyHeader);
-                                }
+                            // v1 header: push back and then read the full line.
+                            in.unread(headerPeek, 0, offset);
+                            ByteArrayOutputStream headerLine = new ByteArrayOutputStream();
+                            byte[] buf = new byte[1];
+                            while (in.read(buf) != -1) {
+                                headerLine.write(buf[0]);
+                                if (buf[0] == '\n') break;
                             }
+                            String proxyHeader = headerLine.toString("ASCII").trim();
+                            debug("Discarded PROXY (v1) header: " + proxyHeader);
                         } else if (headerString.startsWith("CONNECT")) {
                             // HTTP CONNECT tunneling.
-                            in.unread(headerPeek, 0, bytesPeeked);
+                            in.unread(headerPeek, 0, offset);
                             String connectLine = readLine(in);
                             debug("Received CONNECT request: " + connectLine);
-                            // Read and discard all headers.
+                            // Discard all CONNECT headers.
                             String line;
                             while (!(line = readLine(in)).isEmpty()) {
                                 debug("Discarding header: " + line);
                             }
-                            // Send HTTP 200 response.
                             writer.write("HTTP/1.1 200 Connection Established\r\n\r\n");
                             writer.flush();
                         } else {
-                            // No extra header; push back.
-                            in.unread(headerPeek, 0, bytesPeeked);
+                            // No recognized extra header; push back all bytes.
+                            in.unread(headerPeek, 0, offset);
                         }
                     }
                 }
 
-                // Now that any extra headers have been removed, send version string.
+                // Send version handshake.
                 writer.write("VOTIFIERPLUS " + getVersion());
                 writer.newLine();
                 writer.flush();
 
-                // Read the 256-byte vote block.
+                // Read exactly 256 bytes for the vote block.
                 byte[] block = new byte[256];
                 int totalRead = 0;
                 while (totalRead < block.length) {
@@ -202,17 +203,20 @@ public abstract class VoteReceiver extends Thread {
                         break;
                     totalRead += r;
                 }
+                if (totalRead != 256) {
+                    throw new Exception("Incomplete vote block; expected 256 bytes but received " + totalRead);
+                }
 
                 // Decrypt the block.
                 block = RSA.decrypt(block, getKeyPair().getPrivate());
                 int position = 0;
-                // Check opcode.
+                // Verify opcode.
                 String opcode = readString(block, position);
                 position += opcode.length() + 1;
                 if (!opcode.equals("VOTE")) {
                     throw new Exception("Unable to decode RSA: invalid opcode " + opcode);
                 }
-                // Parse vote fields.
+                // Read vote fields.
                 String serviceName = readString(block, position);
                 position += serviceName.length() + 1;
                 String username = readString(block, position);
@@ -222,7 +226,7 @@ public abstract class VoteReceiver extends Thread {
                 String timeStamp = readString(block, position);
                 position += timeStamp.length() + 1;
 
-                // Create the vote.
+                // Create the Vote.
                 final Vote vote = new Vote();
                 vote.setServiceName(serviceName);
                 vote.setUsername(username);
@@ -264,7 +268,7 @@ public abstract class VoteReceiver extends Thread {
                         }
                     }
                 }
-                // Call event on the main thread.
+                // Call the event on the main thread.
                 callEvent(vote);
 
                 // Clean up.
@@ -316,9 +320,9 @@ public abstract class VoteReceiver extends Thread {
         }
         return builder.toString();
     }
-    
+
     /**
-     * Reads a line (terminated by LF, with an optional preceding CR) from the input stream.
+     * Reads a line (terminated by LF, with an optional preceding CR) from the PushbackInputStream.
      * Returns an empty string if the line is empty.
      */
     private String readLine(PushbackInputStream in) throws Exception {
