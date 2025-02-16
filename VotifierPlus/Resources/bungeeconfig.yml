@@ -1,6 +1,8 @@
 Debug: false
 host: 0.0.0.0
 port: 8192
+# This is still new to VotifierPlus, so it's disabled by default.
+TokenSupport: false
 Forwarding:
   server1:
     Enabled: false

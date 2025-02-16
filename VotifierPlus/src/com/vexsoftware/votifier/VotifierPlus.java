@@ -25,8 +25,11 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URL;
 import java.security.CodeSource;
+import java.security.Key;
 import java.security.KeyPair;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.zip.ZipEntry;
@@ -51,6 +54,7 @@ import com.vexsoftware.votifier.commands.VotifierPlusTabCompleter;
 import com.vexsoftware.votifier.config.Config;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
+import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.model.VotifierEvent;
 import com.vexsoftware.votifier.net.VoteReceiver;
@@ -98,6 +102,19 @@ public class VotifierPlus extends JavaPlugin {
 	@Getter
 	private BukkitScheduler bukkitScheduler;
 
+	private HashMap<String, Key> tokens = new HashMap<String, Key>();
+
+	private void loadTokens() {
+		tokens.clear();
+		if (!configFile.getData().contains("tokens")) {
+			configFile.setValue("tokens.default", TokenUtil.newToken());
+		}
+
+		for (String key : configFile.getData().getConfigurationSection("tokens").getKeys(false)) {
+			tokens.put(key, TokenUtil.createKeyFrom(configFile.getData().getString("tokens." + key)));
+		}
+	}
+
 	@Override
 	public void onEnable() {
 		instance = this;
@@ -137,8 +154,11 @@ public class VotifierPlus extends JavaPlugin {
 				getLogger().severe("Error creating configuration file");
 				debug(ex);
 			}
+
+			configFile.setValue("tokens.default", TokenUtil.newToken());
 		}
 		configFile.loadValues();
+		loadTokens();
 
 		loadVersionFile();
 
@@ -300,6 +320,16 @@ public class VotifierPlus extends JavaPlugin {
 						}
 					});
 				}
+
+				@Override
+				public Map<String, Key> getTokens() {
+					return tokens;
+				}
+
+				@Override
+				public boolean isUseTokens() {
+					return configFile.isTokenSupport();
+				}
 			};
 			voteReceiver.start();
 
@@ -416,6 +446,7 @@ public class VotifierPlus extends JavaPlugin {
 	public void reload() {
 		voteReceiver.shutdown();
 		configFile.reloadData();
+		loadTokens();
 		loadVoteReceiver();
 	}
 

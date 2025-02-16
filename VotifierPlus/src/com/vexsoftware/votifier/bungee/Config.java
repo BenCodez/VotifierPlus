@@ -70,4 +70,25 @@ public class Config {
 		return getData().getSection("Forwarding." + s);
 	}
 
+	public Set<String> getTokens() {
+		return (Set<String>) getData().getSection("tokens").getKeys();
+	}
+
+	public boolean getTokenSupport() {
+		return getData().getBoolean("TokenSupport", false);
+	}
+
+	public String getToken(String key) {
+		return getData().getString("tokens." + key, null);
+	}
+
+	public boolean containsTokens() {
+		return getData().getSection("tokens") != null;
+	}
+
+	public void setToken(String key, String token) {
+		getData().set("tokens." + key, token);
+		save();
+	}
+
 }

@@ -10,8 +10,11 @@ import java.io.Reader;
 import java.net.URL;
 import java.nio.file.Path;
 import java.security.CodeSource;
+import java.security.Key;
 import java.security.KeyPair;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -31,6 +34,7 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
+import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
@@ -70,6 +74,19 @@ public class VotifierPlusVelocity {
 	@Subscribe
 	public void onProxyDisable(ProxyShutdownEvent event) {
 		voteReceiver.shutdown();
+	}
+
+	private HashMap<String, Key> tokens = new HashMap<String, Key>();
+
+	private void loadTokens() {
+		tokens.clear();
+		if (!config.containsTokens()) {
+			config.setToken("default", TokenUtil.newToken());
+		}
+
+		for (ConfigurationNode key : config.getTokens()) {
+			tokens.put(key.getKey().toString(), TokenUtil.createKeyFrom(config.getToken(key.getKey().toString())));
+		}
 	}
 
 	private void getVersionFile() {
@@ -144,6 +161,8 @@ public class VotifierPlusVelocity {
 			}
 		}
 		config = new Config(configFile);
+
+		loadTokens();
 
 		CommandMeta meta = server.getCommandManager().metaBuilder("votifierplusbungee")
 				// Specify other aliases (optional)
@@ -252,6 +271,16 @@ public class VotifierPlusVelocity {
 				public void callEvent(Vote vote) {
 					server.getEventManager().fire(new com.vexsoftware.votifier.velocity.event.VotifierEvent(vote));
 				}
+
+				@Override
+				public Map<String, Key> getTokens() {
+					return tokens;
+				}
+
+				@Override
+				public boolean isUseTokens() {
+					return config.getTokenSupport();
+				}
 			};
 			voteReceiver.start();
 
@@ -263,6 +292,7 @@ public class VotifierPlusVelocity {
 
 	public void reload() {
 		config.reload();
+		loadTokens();
 		loadVoteReceiver();
 	}
 }

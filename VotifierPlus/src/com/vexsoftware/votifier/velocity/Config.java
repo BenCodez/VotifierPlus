@@ -30,9 +30,29 @@ public class Config extends VelocityYMLFile {
 	public @NonNull Collection<? extends ConfigurationNode> getServers() {
 		return getNode("Forwarding").getChildrenMap().values();
 	}
-	
+
 	public ConfigurationNode getServersData(String s) {
 		return getNode("Forwarding", s);
 	}
 
+	public @NonNull Collection<? extends ConfigurationNode> getTokens() {
+		return getNode("tokens").getChildrenMap().values();
+	}
+
+	public String getToken(String key) {
+		return getString(getNode("tokens", key), null);
+	}
+
+	public boolean containsTokens() {
+		return getNode("tokens").getValue() != null;
+	}
+
+	public void setToken(String key, String token) {
+		getNode("tokens", key).setValue(token);
+		save();
+	}
+
+	public boolean getTokenSupport() {
+		return getBoolean(getNode("TokenSupport"), false);
+	}
 }

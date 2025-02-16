@@ -75,6 +75,11 @@ public class Config extends YMLFile {
 	@Getter
 	private boolean disableUpdateChecking = false;
 
+	@ConfigDataBoolean(path = "TokenSupport")
+	@Getter
+	@Setter
+	private boolean tokenSupport = false;
+
 	public ConfigurationSection getForwardingConfiguration(String s) {
 		return getData().getConfigurationSection("Forwarding." + s);
 	}

@@ -5,7 +5,10 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.net.URL;
 import java.security.CodeSource;
+import java.security.Key;
 import java.security.KeyPair;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -13,6 +16,7 @@ import java.util.zip.ZipInputStream;
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
+import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
@@ -32,12 +36,25 @@ public class VotifierPlusBungee extends Plugin {
 	@Setter
 	private KeyPair keyPair;
 	private String buildNumber;
+	private Map<String, Key> tokens = new HashMap<String, Key>();
+
+	private void loadTokens() {
+		tokens.clear();
+		if (!config.containsTokens()) {
+			config.setToken("default", TokenUtil.newToken());
+		}
+
+		for (String key : config.getTokens()) {
+			tokens.put(key, TokenUtil.createKeyFrom(config.getToken(key)));
+		}
+	}
 
 	@Override
 	public void onEnable() {
 		instance = this;
 		config = new Config(this);
 		config.load();
+		loadTokens();
 		getProxy().getPluginManager().registerCommand(this, new VotifierPlusCommand(this));
 		File rsaDirectory = new File(getDataFolder() + "/rsa");
 
@@ -106,6 +123,7 @@ public class VotifierPlusBungee extends Plugin {
 
 	public void reload() {
 		config.load();
+		loadTokens();
 		loadVoteReceiver();
 	}
 
@@ -168,6 +186,16 @@ public class VotifierPlusBungee extends Plugin {
 				public void callEvent(Vote vote) {
 					getProxy().getPluginManager()
 							.callEvent(new com.vexsoftware.votifier.bungee.events.VotifierEvent(vote));
+				}
+
+				@Override
+				public Map<String, Key> getTokens() {
+					return tokens;
+				}
+
+				@Override
+				public boolean isUseTokens() {
+					return config.getTokenSupport();
 				}
 			};
 			voteReceiver.start();
