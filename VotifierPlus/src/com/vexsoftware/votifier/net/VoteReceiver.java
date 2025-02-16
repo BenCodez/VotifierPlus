@@ -138,80 +138,84 @@ public abstract class VoteReceiver extends Thread {
 				PushbackInputStream in = new PushbackInputStream(socket.getInputStream(), 512);
 				BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
 
-				// Check if any data is immediately available.
-				try {
-					int available = in.available();
-					if (available > 0) {
-						debug("Data available immediately (" + available
-								+ " bytes). Proceeding with header detection.");
-						// Perform header peek as before.
-						byte[] peekBuffer = new byte[32];
-						int bytesPeeked = 0;
-						debug("Starting header peek; expecting up to 32 bytes for header detection with a 5-second timeout");
-						while (bytesPeeked < peekBuffer.length) {
-							int remaining = peekBuffer.length - bytesPeeked;
-							int r = in.read(peekBuffer, bytesPeeked, remaining);
-							if (r == -1)
-								break;
-							bytesPeeked += r;
-							// If we have at least 16 bytes, we assume we got enough header info.
-							if (bytesPeeked >= 16) {
-								debug("Sufficient header data obtained (" + bytesPeeked
-										+ " bytes); stopping header peek.");
-								break;
-							}
-						}
-						debug("Finished header peek; total header bytes read: " + bytesPeeked);
-						// Unread the header bytes to process normally.
-						in.unread(peekBuffer, 0, bytesPeeked);
-					} else {
-						// No data available immediately: assume sender is waiting for our handshake.
-						debug("No header data available immediately; assuming vote sender awaits handshake. Sending handshake now.");
-						writer.write("VOTIFIERPLUS " + getVersion());
-						writer.newLine();
-						writer.flush();
-					}
-				} catch (java.net.SocketTimeoutException ste) {
-					debug("SocketTimeoutException during header detection: " + ste.getMessage());
-					throw ste;
+				// Poll for available data up to a maximum of 1 second
+				long pollStart = System.currentTimeMillis();
+				int pollTimeout = 1000; // 1 second
+				boolean dataAvailable = false;
+				while (System.currentTimeMillis() - pollStart < pollTimeout) {
+				    int avail = in.available();
+				    if (avail > 0) {
+				        dataAvailable = true;
+				        debug("Data became available during polling (" + avail + " bytes).");
+				        break;
+				    }
+				    try {
+				        Thread.sleep(100); // wait 100ms before checking again
+				    } catch (InterruptedException ie) {
+				        Thread.currentThread().interrupt();
+				    }
+				}
+				
+				boolean sentHandshake = false;
+
+				if (!dataAvailable) {
+				    // No data arrived in the polling period: send handshake immediately.
+				    debug("No data available after polling; assuming sender is waiting for handshake. Sending handshake now.");
+				    writer.write("VOTIFIERPLUS " + getVersion());
+				    writer.newLine();
+				    writer.flush();
+				    sentHandshake = true;
+				} else {
+					sentHandshake = false;
+				    // Data is already available; assume sender is transmitting header data.
+				    debug("Data available immediately; proceeding with header detection.");
+				    byte[] peekBuffer = new byte[32];
+				    int bytesPeeked = 0;
+				    long headerStartTime = System.currentTimeMillis();
+				    debug("Starting header peek; expecting up to 32 bytes for header detection with a 15-second timeout");
+				    try {
+				        while (bytesPeeked < peekBuffer.length) {
+				            int remaining = peekBuffer.length - bytesPeeked;
+				            long beforeRead = System.currentTimeMillis();
+				            int r = in.read(peekBuffer, bytesPeeked, remaining);
+				            if (r == -1) {
+				                debug("Reached end-of-stream while peeking header after " + bytesPeeked + " bytes.");
+				                break;
+				            }
+				            bytesPeeked += r;
+				            long afterRead = System.currentTimeMillis();
+				            debug("Peeked " + r + " bytes; total peeked: " + bytesPeeked +
+				                  " bytes; time for this read: " + (afterRead - beforeRead) + " ms");
+				            // If we've peeked enough header data (e.g. at least 16 bytes), break early.
+				            if (bytesPeeked >= 16) {
+				                debug("Sufficient header data obtained (" + bytesPeeked + " bytes); stopping further peeking.");
+				                break;
+				            }
+				        }
+				    } catch (java.net.SocketTimeoutException ste) {
+				        long errorTime = System.currentTimeMillis();
+				        debug("SocketTimeoutException during header peek after " + bytesPeeked + " bytes at " +
+				              errorTime + " ms (elapsed " + (errorTime - headerStartTime) + " ms)");
+				        throw ste;
+				    }
+				    debug("Finished header peek; total bytes read: " + bytesPeeked);
+				    // Unread the header bytes so the rest of the protocol can process them normally.
+				    in.unread(peekBuffer, 0, bytesPeeked);
 				}
 
-				// Begin header detection with extended timeout and extra debug logging.
+				// Read up to 32 bytes for header detection.
 				byte[] peekBuffer = new byte[32];
 				int bytesPeeked = 0;
-				long headerStartTime = System.currentTimeMillis();
-				debug("Starting header peek; expecting up to 32 bytes for header detection with a 15-second timeout");
-
-				try {
-					while (bytesPeeked < peekBuffer.length) {
-						int remaining = peekBuffer.length - bytesPeeked;
-						long beforeRead = System.currentTimeMillis();
-						int r = in.read(peekBuffer, bytesPeeked, remaining);
-						if (r == -1) {
-							debug("Reached end-of-stream while peeking header after " + bytesPeeked + " bytes.");
-							break;
-						}
-						bytesPeeked += r;
-						long afterRead = System.currentTimeMillis();
-						debug("Peeked " + r + " bytes; total peeked: " + bytesPeeked + " bytes; time for this read: "
-								+ (afterRead - beforeRead) + " ms");
-						// If we've peeked enough data (e.g. at least 16 bytes), you may choose to break
-						// early.
-						if (bytesPeeked >= 16) {
-							debug("Sufficient header data obtained (" + bytesPeeked
-									+ " bytes); stopping further peeking.");
-							break;
-						}
-					}
-				} catch (java.net.SocketTimeoutException ste) {
-					long errorTime = System.currentTimeMillis();
-					debug("SocketTimeoutException during header peek after " + bytesPeeked + " bytes at " + errorTime
-							+ " ms (elapsed " + (errorTime - headerStartTime) + " ms)");
-					throw ste;
+				while (bytesPeeked < peekBuffer.length) {
+					int r = in.read(peekBuffer, bytesPeeked, peekBuffer.length - bytesPeeked);
+					if (r == -1)
+						break;
+					bytesPeeked += r;
+					if (bytesPeeked >= 16)
+						break;
 				}
-				debug("Finished header peek; total bytes read: " + bytesPeeked);
-
 				if (bytesPeeked > 0) {
+
 					if (bytesPeeked >= 12 && isProxyV2(peekBuffer)) {
 						// PROXY protocol v2 detected.
 						int addrLength = ((peekBuffer[14] & 0xFF) << 8) | (peekBuffer[15] & 0xFF);
@@ -260,11 +264,6 @@ public abstract class VoteReceiver extends Thread {
 						}
 					}
 				}
-
-				// Send version handshake.
-				writer.write("VOTIFIERPLUS " + getVersion());
-				writer.newLine();
-				writer.flush();
 
 				// Begin reading the vote block (expected to be exactly 256 bytes).
 				byte[] block = new byte[256];
@@ -317,6 +316,13 @@ public abstract class VoteReceiver extends Thread {
 				String timeStamp = readString(decrypted, position);
 				position += timeStamp.length() + 1;
 
+				if (!sentHandshake) {
+					// Send handshake after receiving vote block.
+					writer.write("VOTIFIERPLUS " + getVersion());
+					writer.newLine();
+					writer.flush();
+				}
+				
 				final Vote vote = new Vote();
 				vote.setServiceName(serviceName);
 				vote.setUsername(username);
