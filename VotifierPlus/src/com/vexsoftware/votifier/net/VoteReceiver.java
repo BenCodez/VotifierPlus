@@ -19,7 +19,15 @@
  * @author Kramer Campbell
  * 
  * Modified to support handling of extra proxy protocol data (e.g. from HAProxy).
- * If a PROXY protocol header is detected at the start of the connection, it is read and discarded.
+ * This version supports multiple connection wrappers:
+ * 1. Direct TCP (no extra header)
+ * 2. PROXY protocol v1 (text-based): if the data begins with "PROXY", read and discard that header line,
+ *    then drain any extra CR/LF characters.
+ * 3. PROXY protocol v2 (binary): if the first 12 bytes match the v2 signature, read and discard the full binary header.
+ * 4. HTTP CONNECT tunneling: if the connection begins with "CONNECT", read/discard the CONNECT request
+ *    and send a "200 Connection Established" response.
+ * 
+ * After discarding any extra header, the normal vote protocol is performed.
  * 
  * Modified by: BenCodez
  * 
@@ -50,29 +58,31 @@ import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSA;
 import com.vexsoftware.votifier.model.Vote;
 
+/**
+ * The vote receiving server.
+ * 
+ * This version supports multiple connection wrappers:
+ * 1. Direct TCP (no extra header)
+ * 2. PROXY protocol v1 (text-based): if the data begins with "PROXY", read and discard that header line,
+ *    then drain any extra CR/LF characters.
+ * 3. PROXY protocol v2 (binary): if the first 12 bytes match the v2 signature, read and discard the full binary header.
+ * 4. HTTP CONNECT tunneling: if the connection begins with "CONNECT", read/discard the CONNECT request
+ *    and send a "200 Connection Established" response.
+ * 
+ * After discarding any extra header, the normal vote protocol is performed.
+ */
 public abstract class VoteReceiver extends Thread {
 
-    /** The host to listen on. */
     private final String host;
-    /** The port to listen on. */
     private final int port;
-    /** The server socket. */
     private ServerSocket server;
-    /** The running flag. */
     private boolean running = true;
 
-    // PROXY protocol v2 fixed signature (first 12 bytes)
+    // Expected 12-byte signature for PROXY protocol v2.
     private static final byte[] PROXY_V2_SIGNATURE = new byte[] {
         0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A
     };
 
-    /**
-     * Instantiates a new vote receiver.
-     * 
-     * @param host The host to listen on
-     * @param port The port to listen on
-     * @throws Exception if initialization fails
-     */
     public VoteReceiver(String host, int port) throws Exception {
         super("Votifier I/O");
         this.host = host;
@@ -85,7 +95,7 @@ public abstract class VoteReceiver extends Thread {
         try {
             server = new ServerSocket();
             server.bind(new InetSocketAddress(host, port));
-            debug(server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
+            debug("Bound to " + server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
         } catch (Exception ex) {
             logSevere("Error initializing vote receiver. Please verify that the configured");
             logSevere("IP address and port are not already in use. This is a common problem");
@@ -101,9 +111,9 @@ public abstract class VoteReceiver extends Thread {
     public abstract void debug(String debug);
     public abstract String getVersion();
 
-    /**
-     * Shuts the vote receiver down cleanly.
-     */
+    public abstract Set<String> getServers();
+    public abstract KeyPair getKeyPair();
+
     public void shutdown() {
         running = false;
         if (server == null)
@@ -115,67 +125,76 @@ public abstract class VoteReceiver extends Thread {
         }
     }
 
-    public abstract Set<String> getServers();
-    public abstract KeyPair getKeyPair();
-
     @Override
     public void run() {
-        // Main loop.
         while (running) {
             try (Socket socket = server.accept()) {
-                socket.setSoTimeout(5000); // Set timeout for slow connections.
+                socket.setSoTimeout(5000); // Timeout for slow connections.
                 PushbackInputStream in = new PushbackInputStream(socket.getInputStream(), 512);
                 BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
 
-                // Ensure we have at least 16 bytes for header detection.
-                byte[] headerPeek = new byte[16];
-                int bytesNeeded = 16;
-                int offset = 0;
-                while (bytesNeeded > 0) {
-                    int r = in.read(headerPeek, offset, bytesNeeded);
+                // Read up to 32 bytes for header detection.
+                byte[] peekBuffer = new byte[32];
+                int bytesPeeked = 0;
+                while (bytesPeeked < peekBuffer.length) {
+                    int r = in.read(peekBuffer, bytesPeeked, peekBuffer.length - bytesPeeked);
                     if (r == -1) break;
-                    offset += r;
-                    bytesNeeded -= r;
+                    bytesPeeked += r;
+                    if (bytesPeeked >= 16) break;
                 }
-                if (offset > 0) {
-                    // Check for PROXY protocol v2.
-                    if (offset >= 12 && isProxyV2(headerPeek)) {
-                        // The length field is at positions 14 and 15.
-                        int addrLength = ((headerPeek[14] & 0xFF) << 8) | (headerPeek[15] & 0xFF);
+                if (bytesPeeked > 0) {
+                    // Log hex dump for debugging.
+                    StringBuilder hexDump = new StringBuilder();
+                    for (int i = 0; i < bytesPeeked; i++) {
+                        hexDump.append(String.format("%02X ", peekBuffer[i]));
+                    }
+                    debug("Peeked header bytes (" + bytesPeeked + "): " + hexDump.toString().trim());
+
+                    if (bytesPeeked >= 12 && isProxyV2(peekBuffer)) {
+                        // PROXY protocol v2 detected.
+                        int addrLength = ((peekBuffer[14] & 0xFF) << 8) | (peekBuffer[15] & 0xFF);
                         int totalV2HeaderLength = 16 + addrLength;
-                        // We have already read 16 bytes; now read the remaining addrLength bytes.
-                        byte[] remaining = new byte[addrLength];
+                        int remaining = totalV2HeaderLength - bytesPeeked;
+                        byte[] discard = new byte[remaining];
                         int readRemaining = 0;
-                        while (readRemaining < addrLength) {
-                            int r = in.read(remaining, readRemaining, addrLength - readRemaining);
+                        while (readRemaining < remaining) {
+                            int r = in.read(discard, readRemaining, remaining - readRemaining);
                             if (r == -1)
                                 break;
                             readRemaining += r;
                         }
-                        if (readRemaining != addrLength) {
+                        if (readRemaining != remaining) {
                             throw new Exception("Incomplete PROXY protocol v2 header");
                         }
                         debug("Discarded PROXY protocol v2 header (total " + totalV2HeaderLength + " bytes)");
                     } else {
-                        // Convert peeked data to string for further checks.
-                        String headerString = new String(headerPeek, 0, offset, "ASCII");
+                        String headerString = new String(peekBuffer, 0, bytesPeeked, "ASCII");
                         if (headerString.startsWith("PROXY")) {
-                            // v1 header: push back and then read the full line.
-                            in.unread(headerPeek, 0, offset);
+                            // PROXY protocol v1.
+                            in.unread(peekBuffer, 0, bytesPeeked);
                             ByteArrayOutputStream headerLine = new ByteArrayOutputStream();
                             byte[] buf = new byte[1];
                             while (in.read(buf) != -1) {
                                 headerLine.write(buf[0]);
-                                if (buf[0] == '\n') break;
+                                if (buf[0] == '\n')
+                                    break;
                             }
                             String proxyHeader = headerLine.toString("ASCII").trim();
                             debug("Discarded PROXY (v1) header: " + proxyHeader);
+                            
+                            // Drain any extra CR/LF characters.
+                            int extra;
+                            while ((extra = in.read()) != -1) {
+                                if (extra != '\r' && extra != '\n') {
+                                    in.unread(extra);
+                                    break;
+                                }
+                            }
                         } else if (headerString.startsWith("CONNECT")) {
                             // HTTP CONNECT tunneling.
-                            in.unread(headerPeek, 0, offset);
+                            in.unread(peekBuffer, 0, bytesPeeked);
                             String connectLine = readLine(in);
                             debug("Received CONNECT request: " + connectLine);
-                            // Discard all CONNECT headers.
                             String line;
                             while (!(line = readLine(in)).isEmpty()) {
                                 debug("Discarding header: " + line);
@@ -183,8 +202,8 @@ public abstract class VoteReceiver extends Thread {
                             writer.write("HTTP/1.1 200 Connection Established\r\n\r\n");
                             writer.flush();
                         } else {
-                            // No recognized extra header; push back all bytes.
-                            in.unread(headerPeek, 0, offset);
+                            // No extra header detected.
+                            in.unread(peekBuffer, 0, bytesPeeked);
                         }
                     }
                 }
@@ -207,26 +226,34 @@ public abstract class VoteReceiver extends Thread {
                     throw new Exception("Incomplete vote block; expected 256 bytes but received " + totalRead);
                 }
 
-                // Decrypt the block.
-                block = RSA.decrypt(block, getKeyPair().getPrivate());
+                byte[] decrypted;
+                try {
+                    decrypted = RSA.decrypt(block, getKeyPair().getPrivate());
+                } catch (BadPaddingException e) {
+                    // Log hex dump for diagnosis.
+                    StringBuilder blockHex = new StringBuilder();
+                    for (byte b : block) {
+                        blockHex.append(String.format("%02X ", b));
+                    }
+                    logWarning("Decryption failed. Raw vote block (hex): " + blockHex.toString().trim());
+                    throw e;
+                }
+                
                 int position = 0;
-                // Verify opcode.
-                String opcode = readString(block, position);
+                String opcode = readString(decrypted, position);
                 position += opcode.length() + 1;
                 if (!opcode.equals("VOTE")) {
                     throw new Exception("Unable to decode RSA: invalid opcode " + opcode);
                 }
-                // Read vote fields.
-                String serviceName = readString(block, position);
+                String serviceName = readString(decrypted, position);
                 position += serviceName.length() + 1;
-                String username = readString(block, position);
+                String username = readString(decrypted, position);
                 position += username.length() + 1;
-                String address = readString(block, position);
+                String address = readString(decrypted, position);
                 position += address.length() + 1;
-                String timeStamp = readString(block, position);
+                String timeStamp = readString(decrypted, position);
                 position += timeStamp.length() + 1;
 
-                // Create the Vote.
                 final Vote vote = new Vote();
                 vote.setServiceName(serviceName);
                 vote.setUsername(username);
@@ -261,17 +288,13 @@ public abstract class VoteReceiver extends Thread {
                                 socket1.close();
                             } catch (Exception e) {
                                 log("Failed to send vote to " + server + "(" + serverIP + ":" + serverPort + "): "
-                                        + vote.toString()
-                                        + ", ignore this if server is offline. Enable debug to see the stacktrace");
+                                        + vote.toString() + ", ignore this if server is offline. Enable debug to see the stacktrace");
                                 debug(e);
                             }
                         }
                     }
                 }
-                // Call the event on the main thread.
                 callEvent(vote);
-
-                // Clean up.
                 writer.close();
                 in.close();
                 socket.close();
@@ -289,12 +312,6 @@ public abstract class VoteReceiver extends Thread {
         }
     }
 
-    /**
-     * Checks whether the provided header begins with the binary PROXY protocol v2 signature.
-     *
-     * @param header the header bytes (must be at least 12 bytes long)
-     * @return true if the header matches the v2 signature, false otherwise.
-     */
     private boolean isProxyV2(byte[] header) {
         for (int i = 0; i < PROXY_V2_SIGNATURE.length; i++) {
             if (header[i] != PROXY_V2_SIGNATURE[i]) {
@@ -304,27 +321,16 @@ public abstract class VoteReceiver extends Thread {
         return true;
     }
 
-    /**
-     * Reads a string from a block of data starting at the given offset.
-     *
-     * @param data   The data to read from.
-     * @param offset The starting offset.
-     * @return The read string.
-     */
     private String readString(byte[] data, int offset) {
         StringBuilder builder = new StringBuilder();
         for (int i = offset; i < data.length; i++) {
             if (data[i] == '\n')
-                break; // Delimiter reached.
+                break;
             builder.append((char) data[i]);
         }
         return builder.toString();
     }
-
-    /**
-     * Reads a line (terminated by LF, with an optional preceding CR) from the PushbackInputStream.
-     * Returns an empty string if the line is empty.
-     */
+    
     private String readLine(PushbackInputStream in) throws Exception {
         ByteArrayOutputStream lineBuffer = new ByteArrayOutputStream();
         int b;
