@@ -264,12 +264,14 @@ public abstract class VoteReceiver extends Thread {
 				}
 
 				// Send OK response.
-				JsonObject okResponse = new JsonObject();
-				okResponse.addProperty("status", "ok");
-				String okMessage = gson.toJson(okResponse) + "\r\n";
-				writer.write(okMessage);
-				writer.flush();
-				debug("Sent OK response: " + okMessage);
+				if (!timeStamp.equalsIgnoreCase("TestVote")) {
+					JsonObject okResponse = new JsonObject();
+					okResponse.addProperty("status", "ok");
+					String okMessage = gson.toJson(okResponse) + "\r\n";
+					writer.write(okMessage);
+					writer.flush();
+					debug("Sent OK response: " + okMessage);
+				}
 
 				// --- Create and Process Vote ---
 				final Vote vote = new Vote();
