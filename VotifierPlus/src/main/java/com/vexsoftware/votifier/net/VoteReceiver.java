@@ -330,8 +330,12 @@ public abstract class VoteReceiver extends Thread {
 				in.close();
 				socket.close();
 			} catch (SocketException ex) {
-				logWarning("Protocol error. Ignoring packet - " + ex.getLocalizedMessage());
-				debug(ex);
+				if (running) {
+					logWarning("Protocol error. Ignoring packet - " + ex.getLocalizedMessage());
+					debug(ex);
+				} else {
+					logWarning("Votifier socket closed.");
+				}
 			} catch (BadPaddingException ex) {
 				logWarning("Unable to decrypt vote record. Make sure that your public key");
 				logWarning("matches the one you gave the server list.");
