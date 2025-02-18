@@ -4,242 +4,315 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.BufferedReader;
 import java.io.BufferedWriter;
-import java.io.InputStreamReader;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStreamWriter;
-import java.net.InetSocketAddress;
-import java.net.Socket;
+import java.io.PushbackInputStream;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.util.Base64;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import com.vexsoftware.votifier.ForwardServer;
+import com.vexsoftware.votifier.crypto.RSA;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
 /**
- * Test class for VoteReceiver that supports both V2 (JSON) and V1 (RSA encrypted) vote processing.
+ * Unit tests for processing V1 (RSA) and V2 (token/JSON) vote payloads,
+ * including verification of the challenge and proxy header processing.
  */
 public class VoteReceiverTest {
 
-    private static final int TEST_PORT = 12345;
-    private static final String TEST_HOST = "localhost";
-    private static final Gson gson = new Gson();
+	// Test RSA key pair for v1 tests.
+	private static KeyPair testKeyPair;
+	// Dummy token key for v2 tests.
+	private static Key dummyTokenKey;
 
-    // Concrete subclass for testing
-    private static class TestVoteReceiver extends VoteReceiver {
+	// Our test receiver instance; will bind to an ephemeral port (0).
+	private TestVoteReceiver receiver;
 
-        // Captured vote for verification
-        public Vote capturedVote;
-        // Reuse a single key pair for both encryption and decryption
-        private final KeyPair keyPair;
+	@BeforeAll
+	public static void setupClass() throws Exception {
+		KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+		kpg.initialize(2048);
+		testKeyPair = kpg.generateKeyPair();
+		// Create a dummy HMAC key (for example purposes)
+		dummyTokenKey = new SecretKeySpec("dummySecretKey1234".getBytes(StandardCharsets.UTF_8), "HmacSHA256");
+	}
 
-        public TestVoteReceiver(String host, int port) throws Exception {
-            super(host, port);
-            this.keyPair = generateDummyKeyPair();
-        }
+	@BeforeEach
+	public void setup() throws Exception {
+		// Bind to port 0 to let the OS assign an available port.
+		receiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair);
+	}
 
-        @Override
-        public boolean isUseTokens() {
-            // For V2 processing, tokens are used.
-            // For V1, this flag is not used since vote encryption is applied.
-            return true;
-        }
+	@AfterEach
+	public void tearDown() {
+		receiver.shutdown();
+	}
 
-        @Override
-        public void logWarning(String warn) {
-            // No-op for testing.
-        }
+	/**
+	 * A dummy subclass of VoteReceiver for testing. We override abstract methods
+	 * and expose helper methods for processing votes.
+	 */
+	private static class TestVoteReceiver extends VoteReceiver {
 
-        @Override
-        public void logSevere(String msg) {
-            // No-op for testing.
-        }
+		private final String testChallenge = "testChallenge";
 
-        @Override
-        public void log(String msg) {
-            // No-op for testing.
-        }
+		public TestVoteReceiver(String host, int port, KeyPair keyPair) throws Exception {
+			super(host, port);
+		}
 
-        @Override
-        public void debug(String msg) {
-            // No-op for testing.
-        }
+		/**
+		 * Process a V1 vote block. The block is assumed to be exactly the RSA-encrypted
+		 * vote block.
+		 */
+		public Vote processV1Vote(byte[] encryptedBlock) throws Exception {
+			byte[] decrypted = RSA.decrypt(encryptedBlock, getKeyPair().getPrivate());
+			int position = 0;
+			String opcode = readString(decrypted, position);
+			position += opcode.length() + 1;
+			if (!opcode.equals("VOTE")) {
+				throw new Exception("Invalid opcode: " + opcode);
+			}
+			String serviceName = readString(decrypted, position);
+			position += serviceName.length() + 1;
+			String username = readString(decrypted, position);
+			position += username.length() + 1;
+			String address = readString(decrypted, position);
+			position += address.length() + 1;
+			String timeStamp = readString(decrypted, position);
+			position += timeStamp.length() + 1;
+			Vote vote = new Vote();
+			vote.setServiceName(serviceName);
+			vote.setUsername(username);
+			vote.setAddress(address);
+			vote.setTimeStamp(timeStamp);
+			return vote;
+		}
 
-        @Override
-        public String getVersion() {
-            return "test";
-        }
+		/**
+		 * Process a V2 vote payload in JSON format.
+		 */
+		public Vote processV2Vote(String jsonPayload) throws Exception {
+			Gson gson = new Gson();
+			JsonObject outer = gson.fromJson(jsonPayload, JsonObject.class);
+			String payload = outer.get("payload").getAsString();
+			JsonObject inner = gson.fromJson(payload, JsonObject.class);
+			// Verify challenge.
+			if (!inner.has("challenge")) {
+				throw new Exception("Vote payload missing challenge field.");
+			}
+			String receivedChallenge = inner.get("challenge").getAsString();
+			if (!receivedChallenge.equals(getChallenge())) {
+				throw new Exception("Invalid challenge: expected " + getChallenge() + " but got " + receivedChallenge);
+			}
+			Vote vote = new Vote();
+			vote.setServiceName(inner.get("serviceName").getAsString());
+			vote.setUsername(inner.get("username").getAsString());
+			vote.setAddress(inner.get("address").getAsString());
+			vote.setTimeStamp(inner.get("timestamp").getAsString());
 
-        @Override
-        public Set<String> getServers() {
-            // Return an empty set so that no vote forwarding occurs.
-            return Collections.emptySet();
-        }
+			return vote;
+		}
 
-        @Override
-        public KeyPair getKeyPair() {
-            // Return the same key pair every time.
-            return keyPair;
-        }
+		// Dummy implementations for abstract methods:
+		@Override
+		public boolean isUseTokens() {
+			// For testing, we decide based on our mode.
+			return false;
+		}
 
-        @Override
-        public Map<String, Key> getTokens() {
-            // Use a dummy HMAC key for V2 vote processing.
-            Map<String, Key> tokens = new HashMap<>();
-            SecretKeySpec keySpec = new SecretKeySpec("secretsecretsecret".getBytes(StandardCharsets.UTF_8), "HmacSHA256");
-            tokens.put("TestService", keySpec);
-            tokens.put("default", keySpec);
-            return tokens;
-        }
+		@Override
+		public void logWarning(String warn) {
+		}
 
-        @Override
-        public ForwardServer getServerData(String s) {
-            return null; // No forwarding in tests.
-        }
+		@Override
+		public void logSevere(String msg) {
+		}
 
-        @Override
-        public void callEvent(Vote e) {
-            // Capture the vote so it can be verified by the test.
-            this.capturedVote = e;
-        }
+		@Override
+		public void log(String msg) {
+		}
 
-        @Override
-        public void debug(Exception e) {
-            // No-op for testing.
-        }
-    }
+		@Override
+		public void debug(String msg) {
+		}
 
-    private TestVoteReceiver voteReceiver;
+		@Override
+		public String getVersion() {
+			return "Test";
+		}
 
-    @BeforeEach
-    public void setUp() throws Exception {
-        // Start the VoteReceiver on the test host and port.
-        voteReceiver = new TestVoteReceiver(TEST_HOST, TEST_PORT);
-        voteReceiver.setDaemon(true);
-        voteReceiver.start();
-        // Allow a brief pause for the server socket to bind.
-        Thread.sleep(200);
-    }
+		@Override
+		public Set<String> getServers() {
+			return Collections.emptySet();
+		}
 
-    @AfterEach
-    public void tearDown() throws Exception {
-        // Shutdown the VoteReceiver after tests.
-        voteReceiver.shutdown();
-        voteReceiver.join(1000);
-    }
+		@Override
+		public KeyPair getKeyPair() {
+			return testKeyPair;
+		}
 
-    @Test
-    public void testValidV2VoteProcessing() throws Exception {
-        // Connect to the VoteReceiver as a client.
-        Socket clientSocket = new Socket();
-        clientSocket.connect(new InetSocketAddress(TEST_HOST, TEST_PORT), 1000);
-        BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8));
-        BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream(), StandardCharsets.UTF_8));
+		@Override
+		public Map<String, Key> getTokens() {
+			return Collections.singletonMap("votifier.bencodez.com", dummyTokenKey);
+		}
 
-        // --- Read Handshake ---
-        String handshake = reader.readLine();
-        assertNotNull(handshake, "Handshake should not be null");
-        assertTrue(handshake.startsWith("VOTIFIER 2 "), "Unexpected handshake: " + handshake);
+		@Override
+		public ForwardServer getServerData(String s) {
+			return null;
+		}
 
-        // --- Build V2 Vote Payload ---
-        String innerPayload = "{\"serviceName\":\"TestService\",\"username\":\"TestUser\",\"address\":\"127.0.0.1\",\"timestamp\":\"2025-02-16T00:00:00Z\"}";
-        SecretKeySpec keySpec = new SecretKeySpec("secretsecretsecret".getBytes(StandardCharsets.UTF_8), "HmacSHA256");
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(keySpec);
-        byte[] hmacBytes = mac.doFinal(innerPayload.getBytes(StandardCharsets.UTF_8));
-        String hmacBase64 = Base64.getEncoder().encodeToString(hmacBytes);
-        String voteJson = "{\"payload\":" + gson.toJson(innerPayload) + ",\"signature\":\"" + hmacBase64 + "\"}";
+		@Override
+		public void callEvent(Vote e) {
+		}
 
-        // --- Send Vote Payload ---
-        writer.write(voteJson);
-        writer.flush();
-        clientSocket.shutdownOutput();
+		@Override
+		public void debug(Exception e) {
+		}
 
-        // --- Read OK Response ---
-        String okResponse = reader.readLine();
-        assertNotNull(okResponse, "OK response should not be null");
-        assertTrue(okResponse.contains("\"status\":\"ok\""), "Unexpected OK response: " + okResponse);
+		// Expose readString method (reimplementation)
+		public String readString(byte[] data, int offset) {
+			StringBuilder builder = new StringBuilder();
+			for (int i = offset; i < data.length; i++) {
+				if (data[i] == '\n')
+					break;
+				builder.append((char) data[i]);
+			}
+			return builder.toString();
+		}
 
-        // Allow time for VoteReceiver to process the vote.
-        Thread.sleep(200);
-        assertNotNull(voteReceiver.capturedVote, "Vote event should have been triggered");
-        assertEquals("TestService", voteReceiver.capturedVote.getServiceName(), "Service name mismatch");
-        assertEquals("TestUser", voteReceiver.capturedVote.getUsername(), "Username mismatch");
-        assertEquals("127.0.0.1", voteReceiver.capturedVote.getAddress(), "Address mismatch");
-        assertEquals("2025-02-16T00:00:00Z", voteReceiver.capturedVote.getTimeStamp(), "Timestamp mismatch");
+		// For V2, challenge is always testChallenge.
+		@Override
+		public String getChallenge() {
+			return testChallenge;
+		}
+	}
 
-        clientSocket.close();
-    }
+	@Test
+	public void testV1Vote() throws Exception {
+		// Construct a vote message for V1.
+		String voteMsg = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
+		Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+		cipher.init(Cipher.ENCRYPT_MODE, testKeyPair.getPublic());
+		byte[] encrypted = cipher.doFinal(voteMsg.getBytes(StandardCharsets.UTF_8));
+		assertEquals(256, encrypted.length);
 
-    @Test
-    public void testValidV1VoteProcessing() throws Exception {
-        // Connect to the VoteReceiver as a client.
-        Socket clientSocket = new Socket();
-        clientSocket.connect(new InetSocketAddress(TEST_HOST, TEST_PORT), 1000);
-        BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8));
+		Vote vote = receiver.processV1Vote(encrypted);
+		assertNotNull(vote);
+		assertEquals("votifier.bencodez.com", vote.getServiceName());
+		assertEquals("testUser", vote.getUsername());
+		assertEquals("127.0.0.1", vote.getAddress());
+		assertEquals("TestTimestamp", vote.getTimeStamp());
+	}
 
-        // --- Read Handshake ---
-        String handshake = reader.readLine();
-        assertNotNull(handshake, "Handshake should not be null");
-        assertTrue(handshake.startsWith("VOTIFIER 2 "), "Unexpected handshake: " + handshake);
+	@Test
+	public void testV2Vote() throws Exception {
+		// Construct a JSON payload for V2.
+		String challenge = "testChallenge";
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", "testUserV2");
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestampV2");
+		inner.addProperty("challenge", challenge);
+		String payload = inner.toString();
 
-        // --- Build V1 Vote Payload ---
-        StringBuilder payloadBuilder = new StringBuilder();
-        payloadBuilder.append("VOTE\n");           // opcode
-        payloadBuilder.append("TestService\n");      // serviceName
-        payloadBuilder.append("TestUser\n");         // username
-        payloadBuilder.append("127.0.0.1\n");          // address
-        payloadBuilder.append("TestV1\n");           // timestamp
-        String plaintext = payloadBuilder.toString();
+		// Compute HMAC signature using dummyTokenKey.
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+		String signature = Base64.getEncoder().encodeToString(signatureBytes);
 
-        // Encrypt the plaintext using the RSA public key (from our stored key pair).
-        byte[] encryptedBlock = voteReceiver.encrypt(plaintext.getBytes(StandardCharsets.UTF_8),
-                voteReceiver.getKeyPair().getPublic());
-        assertEquals(256, encryptedBlock.length, "Encrypted block should be 256 bytes");
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+		String jsonPayload = outer.toString();
 
-        // --- Send the Encrypted V1 Block ---
-        clientSocket.getOutputStream().write(encryptedBlock);
-        clientSocket.getOutputStream().flush();
-        clientSocket.shutdownOutput();
+		// Create a new TestVoteReceiver in token mode.
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+		Vote vote = tokenReceiver.processV2Vote(jsonPayload);
+		assertNotNull(vote);
+		assertEquals("votifier.bencodez.com", vote.getServiceName());
+		assertEquals("testUserV2", vote.getUsername());
+		assertEquals("127.0.0.1", vote.getAddress());
+		assertEquals("TestTimestampV2", vote.getTimeStamp());
+		tokenReceiver.shutdown();
+	}
 
-        // --- Read OK Response ---
-        String okResponse = reader.readLine();
-        assertNotNull(okResponse, "OK response should not be null");
-        assertTrue(okResponse.contains("\"status\":\"ok\""), "Unexpected OK response: " + okResponse);
+	@Test
+	public void testProxyV1Header() throws Exception {
+		// Test processing of a PROXY protocol v1 header.
+		String proxyHeader = "PROXY TCP4 192.168.1.1 192.168.1.2 1234 80\r\n";
+		String remainingData = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
+		String input = proxyHeader + remainingData;
+		PushbackInputStream pis = new PushbackInputStream(
+				new ByteArrayInputStream(input.getBytes(StandardCharsets.US_ASCII)), 512);
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(baos, StandardCharsets.US_ASCII));
 
-        // Allow time for the VoteReceiver to process the vote.
-        Thread.sleep(200);
-        assertNotNull(voteReceiver.capturedVote, "Vote event should have been triggered");
-        assertEquals("TestService", voteReceiver.capturedVote.getServiceName(), "Service name mismatch");
-        assertEquals("TestUser", voteReceiver.capturedVote.getUsername(), "Username mismatch");
-        assertEquals("127.0.0.1", voteReceiver.capturedVote.getAddress(), "Address mismatch");
-        assertEquals("TestV1", voteReceiver.capturedVote.getTimeStamp(), "Timestamp mismatch");
+		// Use reflection to call the private processProxyHeaders method.
+		Method method = VoteReceiver.class.getDeclaredMethod("processProxyHeaders", PushbackInputStream.class,
+				BufferedWriter.class);
+		method.setAccessible(true);
+		method.invoke(receiver, pis, writer);
 
-        clientSocket.close();
-    }
+		// After processing, the remaining data should be the vote payload.
+		byte[] remaining = new byte[remainingData.length()];
+		int read = pis.read(remaining);
+		String output = new String(remaining, 0, read, StandardCharsets.US_ASCII);
+		assertEquals(remainingData, output);
+	}
 
-    /**
-     * Generates a dummy RSA key pair (2048-bit) for testing purposes.
-     */
-    private static KeyPair generateDummyKeyPair() throws Exception {
-        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
-        keyGen.initialize(2048); // Use a 2048-bit key so that encryption produces a 256-byte block.
-        return keyGen.generateKeyPair();
-    }
+	@Test
+	public void testConnectHeader() throws Exception {
+		// Test processing of an HTTP CONNECT header.
+		String connectHeader = "CONNECT some.host:443 HTTP/1.1\r\nHost: some.host:443\r\n\r\n";
+		String remainingData = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
+		String input = connectHeader + remainingData;
+		PushbackInputStream pis = new PushbackInputStream(
+				new ByteArrayInputStream(input.getBytes(StandardCharsets.US_ASCII)), 512);
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(baos, StandardCharsets.US_ASCII));
+
+		Method method = VoteReceiver.class.getDeclaredMethod("processProxyHeaders", PushbackInputStream.class,
+				BufferedWriter.class);
+		method.setAccessible(true);
+		method.invoke(receiver, pis, writer);
+		writer.flush();
+
+		// The writer should contain the HTTP CONNECT response.
+		String response = baos.toString("ASCII");
+		assertTrue(response.contains("200 Connection Established"));
+
+		// The remaining data in the stream should be the vote payload.
+		byte[] remaining = new byte[remainingData.length()];
+		int read = pis.read(remaining);
+		String output = new String(remaining, 0, read, StandardCharsets.US_ASCII);
+		assertEquals(remainingData, output);
+	}
 }

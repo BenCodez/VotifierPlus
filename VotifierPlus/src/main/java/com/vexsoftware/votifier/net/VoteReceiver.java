@@ -131,12 +131,15 @@ public abstract class VoteReceiver extends Thread {
 				// Send handshake greeting immediately.
 				String message = "";
 				if (isUseTokens()) {
-					message = "VOTIFIER 2 ";
+					message = "VOTIFIER 2";
 				} else {
-					message = "VOTIFIERPLUS " + getVersion() + " ";
+					message = "VOTIFIER 1";
 				}
 				String challenge = getChallenge();
-				writer.write(message + challenge);
+				if (isUseTokens()) {
+					message += " " + challenge;
+				}
+				writer.write(message);
 				writer.newLine();
 				writer.flush();
 				debug("Sent handshake: " + message);
@@ -254,6 +257,15 @@ public abstract class VoteReceiver extends Thread {
 					}
 					if (!hmacEqual(sigBytes, payload.getBytes(StandardCharsets.UTF_8), key)) {
 						throw new Exception("Signature is not valid (invalid token?)");
+					}
+
+					if (!votePayload.has("challenge")) {
+						throw new Exception("Vote payload missing challenge field.");
+					}
+					String receivedChallenge = votePayload.get("challenge").getAsString();
+					if (!receivedChallenge.equals(challenge)) {
+						throw new Exception(
+								"Invalid challenge: expected " + challenge + " but got " + receivedChallenge);
 					}
 				} else {
 					String[] fields = voteData.split("\n");
@@ -406,7 +418,7 @@ public abstract class VoteReceiver extends Thread {
 	}
 
 	// Generates a challenge string using TokenUtil.
-	private String getChallenge() {
+	public String getChallenge() {
 		return TokenUtil.newToken();
 	}
 
