@@ -39,6 +39,7 @@ package com.vexsoftware.votifier.net;
 
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
@@ -63,12 +64,15 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSA;
 import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.model.Vote;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import lombok.Getter;
 
 public abstract class VoteReceiver extends Thread {
@@ -119,6 +123,49 @@ public abstract class VoteReceiver extends Thread {
 
 	public abstract boolean isUseTokens();
 
+	/**
+	 * Enum representing the vote protocol version.
+	 */
+	private enum VoteProtocolVersion {
+		V1, V2;
+	}
+
+	private static final short PROTOCOL_2_MAGIC = 0x733A;
+
+	/**
+	 * Checks if the incoming vote payload is in V2 (JSON) format (using a magic
+	 * value) or legacy V1 format. It reads the first two bytes, wraps them in a
+	 * ByteBuf to check the magic, and then pushes the bytes back into the stream.
+	 *
+	 * @param in the PushbackInputStream containing the vote payload.
+	 * @return VoteProtocolVersion.V2 if the magic matches PROTOCOL_2_MAGIC,
+	 *         otherwise V1.
+	 * @throws IOException if there is an error reading from the stream.
+	 */
+	private VoteProtocolVersion checkVoteVersion(PushbackInputStream in) throws IOException {
+		byte[] header = new byte[2];
+		int bytesRead = in.read(header);
+		if (bytesRead < 2) {
+			throw new IOException("Not enough data available to determine vote protocol version.");
+		}
+
+		if ((char) header[0] == '{') {
+			in.unread(header, 0, bytesRead);
+			return VoteProtocolVersion.V2;
+		}
+
+		// Wrap the header bytes into a ByteBuf for magic value checking.
+		ByteBuf buf = Unpooled.wrappedBuffer(header);
+		short magic = buf.getShort(0);
+		// Push the header bytes back into the stream.
+		in.unread(header, 0, bytesRead);
+
+		if (magic == PROTOCOL_2_MAGIC) {
+			return VoteProtocolVersion.V2;
+		}
+		return VoteProtocolVersion.V1;
+	}
+
 	@Override
 	public void run() {
 		while (running) {
@@ -142,16 +189,14 @@ public abstract class VoteReceiver extends Thread {
 				// Check for pre-existing V1 vote payload before sending handshake.
 				// Some sites may send a vote payload immediately after connecting.
 				int avail = in.available();
-				boolean handshakeSent = true;
 
 				if (avail >= 256) {
 					// If there are at least 256 bytes available, assume this is a legacy V1 vote
 					// payload.
 					debug("Detected V1 vote payload before handshake (available bytes: " + avail
 							+ "), skipping handshake.");
-					handshakeSent = false;
 				} else {
-					writer.write(message + challenge);
+					writer.write(message);
 					writer.newLine();
 					writer.flush();
 					debug("Sent handshake: " + message);
@@ -180,9 +225,10 @@ public abstract class VoteReceiver extends Thread {
 				}
 
 				// --- Determine protocol type and read vote payload ---
-				boolean isV1 = false;
+				VoteProtocolVersion voteProtocolVersion = checkVoteVersion(in);
+				debug("Detected vote protocol version: " + voteProtocolVersion.toString());
 				String voteData = null;
-				if (in.available() >= 256) {
+				if (voteProtocolVersion.equals(VoteProtocolVersion.V1)) {
 					byte[] block = new byte[256];
 					int totalRead = 0;
 					long startTime = System.currentTimeMillis();
@@ -225,11 +271,10 @@ public abstract class VoteReceiver extends Thread {
 						String timeStamp = readString(decrypted, position);
 						position += timeStamp.length() + 1;
 						voteData = "VOTE\n" + serviceName + "\n" + username + "\n" + address + "\n" + timeStamp + "\n";
-						isV1 = true;
 						debug("Processed V1 vote block.");
 					}
 				}
-				if (!isV1) {
+				if (voteProtocolVersion.equals(VoteProtocolVersion.V2)) {
 					// In V2 mode, always parse as JSON.
 					ByteArrayOutputStream voteDataStream = new ByteArrayOutputStream();
 					int b;
@@ -242,37 +287,69 @@ public abstract class VoteReceiver extends Thread {
 
 				// --- Parse Vote Data (V2 JSON mode) ---
 				String serviceName, username, address, timeStamp = "";
-				if (!isV1) {
-					// Instead of checking startsWith("{") directly, extract JSON from the first '{'
-					// to the last '}'.
+				if (voteProtocolVersion.equals(VoteProtocolVersion.V2)) {
+					// Remove any extraneous characters before the first '{'
+					int firstBrace = voteData.indexOf('{');
+					if (firstBrace > 0) {
+						voteData = voteData.substring(firstBrace);
+					}
+
+					// Find the first '{' and the last '}' to extract JSON.
 					int jsonStart = voteData.indexOf("{");
 					int jsonEnd = voteData.lastIndexOf("}");
 					if (jsonStart == -1 || jsonEnd == -1 || jsonStart > jsonEnd) {
 						throw new Exception("Expected JSON-formatted vote payload, got: " + voteData);
 					}
-					String jsonPayload = voteData.substring(jsonStart, jsonEnd + 1);
-					debug("Extracted JSON payload: [" + jsonPayload + "]");
-					JsonObject voteMessage = gson.fromJson(jsonPayload, JsonObject.class);
+					String jsonPayloadRaw = voteData.substring(jsonStart, jsonEnd + 1).trim();
+					debug("Extracted raw JSON payload: [" + jsonPayloadRaw + "]");
+
+					// Check if the JSON payload is an array and, if so, extract the first object.
+					JsonObject voteMessage;
+					if (jsonPayloadRaw.startsWith("[")) {
+						JsonArray jsonArray = gson.fromJson(jsonPayloadRaw, JsonArray.class);
+						if (jsonArray.size() == 0) {
+							throw new Exception("Empty JSON array in vote payload");
+						}
+						voteMessage = jsonArray.get(0).getAsJsonObject();
+					} else {
+						voteMessage = gson.fromJson(jsonPayloadRaw, JsonObject.class);
+					}
+
+					// Extract the inner payload and signature.
 					String payload = voteMessage.get("payload").getAsString();
-					JsonObject votePayload = gson.fromJson(payload, JsonObject.class);
-					serviceName = votePayload.get("serviceName").getAsString();
-					username = votePayload.get("username").getAsString();
-					address = votePayload.get("address").getAsString();
-					timeStamp = votePayload.get("timestamp").getAsString();
-					// Verify HMAC signature.
 					String sigHash = voteMessage.get("signature").getAsString();
 					byte[] sigBytes = Base64.getDecoder().decode(sigHash);
-					Key key = getTokens().get(serviceName);
+
+					// Parse the inner payload JSON.
+					JsonObject votePayload = gson.fromJson(payload, JsonObject.class);
+
+					// Retrieve serviceName from the inner JSON.
+					String serviceNameFromPayload = votePayload.get("serviceName").getAsString();
+
+					// Lookup the token using the serviceName from the inner payload.
+					Key key = getTokens().get(serviceNameFromPayload);
 					if (key == null) {
 						key = getTokens().get("default");
 						if (key == null) {
-							throw new Exception("Unknown service '" + serviceName + "'");
+							throw new Exception("Unknown service '" + serviceNameFromPayload + "'");
 						}
 					}
+
+					// Debug: log the payload string and its computed HMAC for comparison.
+					debug("Inner payload string: [" + payload + "]");
+
+					// Verify HMAC signature using the payload bytes.
 					if (!hmacEqual(sigBytes, payload.getBytes(StandardCharsets.UTF_8), key)) {
 						throw new Exception("Signature is not valid (invalid token?)");
 					}
 
+					// Extract vote fields from the inner payload.
+					serviceName = serviceNameFromPayload;
+					username = votePayload.get("username").getAsString();
+					address = votePayload.get("address").getAsString();
+					timeStamp = votePayload.get("timestamp").getAsString();
+
+					// Check the challenge.
 					if (!votePayload.has("challenge")) {
 						throw new Exception("Vote payload missing challenge field.");
 					}
@@ -328,13 +405,11 @@ public abstract class VoteReceiver extends Thread {
 							try (Socket forwardSocket = new Socket()) {
 								forwardSocket.connect(sockAddr, 1000);
 								OutputStream outStream = forwardSocket.getOutputStream();
-								if (isV1) {
-									byte[] encrypted = encrypt(voteString.getBytes(StandardCharsets.UTF_8),
-											getPublicKey(forwardServer));
-									outStream.write(encrypted);
-								} else {
-									outStream.write(voteString.getBytes(StandardCharsets.UTF_8));
-								}
+
+								byte[] encrypted = encrypt(voteString.getBytes(StandardCharsets.UTF_8),
+										getPublicKey(forwardServer));
+								outStream.write(encrypted);
+
 								outStream.flush();
 							}
 						} catch (Exception e) {
