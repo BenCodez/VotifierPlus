@@ -1,8 +1,12 @@
 Debug: false
+# The host VotifierPlus will listen on
 host: 0.0.0.0
+# The port VotifierPlus will listen on
 port: 8192
 # This is still new to VotifierPlus, so it's disabled by default.
 TokenSupport: false
+# If your using VotingPlugin you don't need this
+# Doesn't support tokens yet
 Forwarding:
   server1:
     Enabled: false

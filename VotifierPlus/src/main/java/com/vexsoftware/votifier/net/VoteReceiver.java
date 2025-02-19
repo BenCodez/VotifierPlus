@@ -139,10 +139,23 @@ public abstract class VoteReceiver extends Thread {
 				if (isUseTokens()) {
 					message += " " + challenge;
 				}
-				writer.write(message);
-				writer.newLine();
-				writer.flush();
-				debug("Sent handshake: " + message);
+				// Check for pre-existing V1 vote payload before sending handshake.
+				// Some sites may send a vote payload immediately after connecting.
+				int avail = in.available();
+				boolean handshakeSent = true;
+
+				if (avail >= 256) {
+					// If there are at least 256 bytes available, assume this is a legacy V1 vote
+					// payload.
+					debug("Detected V1 vote payload before handshake (available bytes: " + avail
+							+ "), skipping handshake.");
+					handshakeSent = false;
+				} else {
+					writer.write(message + challenge);
+					writer.newLine();
+					writer.flush();
+					debug("Sent handshake: " + message);
+				}
 
 				// Process any proxy headers if available.
 				if (in.available() > 0) {
@@ -193,7 +206,8 @@ public abstract class VoteReceiver extends Thread {
 							for (byte b : block) {
 								blockHex.append(String.format("%02X ", b));
 							}
-							logWarning("Decryption failed. Raw vote block (hex): " + blockHex.toString().trim());
+							logWarning(
+									"Decryption failed. Either the vote block is invalid or the public key does not match the server list.");
 							throw e;
 						}
 						int position = 0;
@@ -277,12 +291,17 @@ public abstract class VoteReceiver extends Thread {
 
 				// Send OK response.
 				if (!timeStamp.equalsIgnoreCase("TestVote")) {
-					JsonObject okResponse = new JsonObject();
-					okResponse.addProperty("status", "ok");
-					String okMessage = gson.toJson(okResponse) + "\r\n";
-					writer.write(okMessage);
-					writer.flush();
-					debug("Sent OK response: " + okMessage);
+					try {
+						JsonObject okResponse = new JsonObject();
+						okResponse.addProperty("status", "ok");
+						String okMessage = gson.toJson(okResponse) + "\r\n";
+						writer.write(okMessage);
+						writer.flush();
+						debug("Sent OK response: " + okMessage);
+					} catch (Exception e) {
+						debug("Failed to send OK response, but will continue to process vote: "
+								+ e.getLocalizedMessage());
+					}
 				}
 
 				// --- Create and Process Vote ---
