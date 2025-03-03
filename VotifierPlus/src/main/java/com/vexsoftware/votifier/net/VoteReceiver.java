@@ -366,6 +366,17 @@ public abstract class VoteReceiver extends Thread {
 					timeStamp = fields[4];
 				}
 
+				// --- Create and Process Vote ---
+				final Vote vote = new Vote();
+				vote.setServiceName(serviceName);
+				vote.setUsername(username);
+				vote.setAddress(address);
+				vote.setTimeStamp(timeStamp);
+				if (timeStamp.equalsIgnoreCase("TestVote")) {
+					log("Test vote received");
+				}
+				log("Received vote record -> " + vote);
+
 				// Send OK response.
 				if (!timeStamp.equalsIgnoreCase("TestVote")) {
 					try {
@@ -380,17 +391,6 @@ public abstract class VoteReceiver extends Thread {
 								+ e.getLocalizedMessage());
 					}
 				}
-
-				// --- Create and Process Vote ---
-				final Vote vote = new Vote();
-				vote.setServiceName(serviceName);
-				vote.setUsername(username);
-				vote.setAddress(address);
-				vote.setTimeStamp(timeStamp);
-				if (timeStamp.equalsIgnoreCase("TestVote")) {
-					log("Test vote received");
-				}
-				log("Received vote record -> " + vote);
 
 				// --- Forward Vote to Other Servers ---
 				for (String server : getServers()) {
