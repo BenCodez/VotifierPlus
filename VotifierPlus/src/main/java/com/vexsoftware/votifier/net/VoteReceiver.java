@@ -353,8 +353,8 @@ public abstract class VoteReceiver extends Thread {
 					if (!votePayload.has("challenge")) {
 						throw new Exception("Vote payload missing challenge field.");
 					}
-					String receivedChallenge = votePayload.get("challenge").getAsString();
-					if (!receivedChallenge.equals(challenge)) {
+					String receivedChallenge = votePayload.get("challenge").getAsString().trim();
+					if (!receivedChallenge.equals(challenge.trim())) {
 						throw new Exception(
 								"Invalid challenge: expected " + challenge + " but got " + receivedChallenge);
 					}
