@@ -272,6 +272,9 @@ public abstract class VoteReceiver extends Thread {
 						position += timeStamp.length() + 1;
 						voteData = "VOTE\n" + serviceName + "\n" + username + "\n" + address + "\n" + timeStamp + "\n";
 						debug("Processed V1 vote block.");
+					} else {
+						debug("Failed to read V1 vote, random ping?");
+						return;
 					}
 				}
 				if (voteProtocolVersion.equals(VoteProtocolVersion.V2)) {
