@@ -400,8 +400,8 @@ public abstract class VoteReceiver extends Thread {
 					ForwardServer forwardServer = getServerData(server);
 					if (forwardServer.isEnabled()) {
 						debug("Forwarding vote to: " + server);
-						String voteString = "VOTE\0" + serviceName + "\0" + username + "\0" + address + "\0" + timeStamp
-								+ "\0";
+						String voteString = "VOTE\n" + vote.getServiceName() + "\n" + vote.getUsername() + "\n"
+								+ vote.getAddress() + "\n" + vote.getTimeStamp() + "\n";
 						try {
 							SocketAddress sockAddr = new InetSocketAddress(forwardServer.getHost(),
 									forwardServer.getPort());
@@ -447,7 +447,7 @@ public abstract class VoteReceiver extends Thread {
 	private String readString(byte[] data, int offset) {
 		StringBuilder builder = new StringBuilder();
 		for (int i = offset; i < data.length; i++) {
-			if (data[i] == '\n' || data[i] == ' ')
+			if (data[i] == '\n')
 				break;
 			builder.append((char) data[i]);
 		}
