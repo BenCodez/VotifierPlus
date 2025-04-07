@@ -447,7 +447,7 @@ public abstract class VoteReceiver extends Thread {
 	private String readString(byte[] data, int offset) {
 		StringBuilder builder = new StringBuilder();
 		for (int i = offset; i < data.length; i++) {
-			if (data[i] == '\n')
+			if (data[i] == '\n' || data[i] == ' ')
 				break;
 			builder.append((char) data[i]);
 		}
