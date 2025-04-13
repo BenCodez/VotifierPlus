@@ -274,7 +274,7 @@ public abstract class VoteReceiver extends Thread {
 						debug("Processed V1 vote block.");
 					} else {
 						debug("Failed to read V1 vote, random ping?");
-						return;
+						throw new Exception("Failed to read V1 vote block: expected 256 bytes, got " + totalRead);
 					}
 				}
 				if (voteProtocolVersion.equals(VoteProtocolVersion.V2)) {
