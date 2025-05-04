@@ -48,6 +48,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyFactory;
@@ -233,48 +234,61 @@ public abstract class VoteReceiver extends Thread {
 					int totalRead = 0;
 					long startTime = System.currentTimeMillis();
 					debug("Reading V1 vote block (256 bytes expected) at " + startTime + " ms");
-					while (totalRead < block.length) {
-						int remaining = block.length - totalRead;
-						int r = in.read(block, totalRead, remaining);
-						if (r == -1) {
-							debug("Reached end-of-stream unexpectedly after " + totalRead + " bytes.");
-							break;
-						}
-						totalRead += r;
-						debug("Read " + r + " bytes; total: " + totalRead);
-					}
-					if (totalRead == 256) {
-						byte[] decrypted;
-						try {
-							decrypted = RSA.decrypt(block, getKeyPair().getPrivate());
-						} catch (BadPaddingException e) {
-							StringBuilder blockHex = new StringBuilder();
-							for (byte b : block) {
-								blockHex.append(String.format("%02X ", b));
-							}
-							logWarning(
-									"Decryption failed. Either the vote block is invalid or the public key does not match the server list.");
-							throw e;
-						}
-						int position = 0;
-						String opcode = readString(decrypted, position);
-						position += opcode.length() + 1;
-						if (!opcode.equals("VOTE")) {
-							throw new Exception("Unable to decode RSA: invalid opcode " + opcode);
-						}
-						String serviceName = readString(decrypted, position);
-						position += serviceName.length() + 1;
-						String username = readString(decrypted, position);
-						position += username.length() + 1;
-						String address = readString(decrypted, position);
-						position += address.length() + 1;
-						String timeStamp = readString(decrypted, position);
-						position += timeStamp.length() + 1;
-						voteData = "VOTE\n" + serviceName + "\n" + username + "\n" + address + "\n" + timeStamp + "\n";
-						debug("Processed V1 vote block.");
+
+					if (in.available() < 256) {
+						debug("Insufficient data available for V1 vote block; closing connection.");
+						writer.close();
+						in.close();
+						socket.close();
+						continue;
 					} else {
-						debug("Failed to read V1 vote, random ping?");
-						throw new Exception("Failed to read V1 vote block: expected 256 bytes, got " + totalRead);
+
+						while (totalRead < block.length) {
+							int remaining = block.length - totalRead;
+							int r = in.read(block, totalRead, remaining);
+							if (r == -1) {
+								debug("Reached end-of-stream unexpectedly after " + totalRead + " bytes.");
+								break;
+							}
+							totalRead += r;
+							debug("Read " + r + " bytes; total: " + totalRead);
+						}
+						if (totalRead == 256) {
+							byte[] decrypted;
+							try {
+								decrypted = RSA.decrypt(block, getKeyPair().getPrivate());
+							} catch (BadPaddingException e) {
+								StringBuilder blockHex = new StringBuilder();
+								for (byte b : block) {
+									blockHex.append(String.format("%02X ", b));
+								}
+								logWarning(
+										"Decryption failed. Either the vote block is invalid or the public key does not match the server list.");
+								throw e;
+							}
+							int position = 0;
+							String opcode = readString(decrypted, position);
+							position += opcode.length() + 1;
+							if (!opcode.equals("VOTE")) {
+								throw new Exception("Unable to decode RSA: invalid opcode " + opcode);
+							}
+							String serviceName = readString(decrypted, position);
+							position += serviceName.length() + 1;
+							String username = readString(decrypted, position);
+							position += username.length() + 1;
+							String address = readString(decrypted, position);
+							position += address.length() + 1;
+							String timeStamp = readString(decrypted, position);
+							position += timeStamp.length() + 1;
+							voteData = "VOTE\n" + serviceName + "\n" + username + "\n" + address + "\n" + timeStamp
+									+ "\n";
+							debug("Processed V1 vote block.");
+						} else {
+							debug("Failed to read V1 vote, random ping? expected 256 bytes, got " + totalRead);
+							continue;
+							// throw new Exception("Failed to read V1 vote block: expected 256 bytes, got "
+							// + totalRead);
+						}
 					}
 				}
 				if (voteProtocolVersion.equals(VoteProtocolVersion.V2)) {
@@ -436,6 +450,9 @@ public abstract class VoteReceiver extends Thread {
 			} catch (BadPaddingException ex) {
 				logWarning("Unable to decrypt vote record. Make sure that your public key");
 				logWarning("matches the one you gave the server list.");
+				debug(ex);
+			} catch (SocketTimeoutException ex) {
+				logWarning("Socket timeout while waiting for vote payload: " + ex.getMessage());
 				debug(ex);
 			} catch (Exception ex) {
 				logWarning("Exception caught while receiving a vote notification: " + ex.getLocalizedMessage());
