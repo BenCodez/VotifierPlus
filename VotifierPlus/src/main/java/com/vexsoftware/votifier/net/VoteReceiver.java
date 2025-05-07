@@ -67,6 +67,7 @@ import javax.crypto.spec.SecretKeySpec;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.stream.MalformedJsonException;
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSA;
 import com.vexsoftware.votifier.crypto.TokenUtil;
@@ -440,6 +441,9 @@ public abstract class VoteReceiver extends Thread {
 				writer.close();
 				in.close();
 				socket.close();
+			} catch (MalformedJsonException ex) {
+				logWarning("Malformed JSON payload received: " + ex.getMessage());
+				debug(ex);
 			} catch (SocketException ex) {
 				if (running) {
 					logWarning("Protocol error. Ignoring packet - " + ex.getLocalizedMessage());
