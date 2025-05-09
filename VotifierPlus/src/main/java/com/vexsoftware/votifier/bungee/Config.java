@@ -83,7 +83,7 @@ public class Config {
 	}
 
 	public boolean containsTokens() {
-		return getData().getSection("tokens") != null;
+		return getData().contains("tokens");
 	}
 
 	public void setToken(String key, String token) {
