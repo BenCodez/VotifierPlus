@@ -44,8 +44,9 @@ public class VoteTest {
 
 	@Test
 	public void toStringReturnsCorrectFormat() {
-		Vote vote = new Vote("TestService", "TestUser", "127.0.0.1", "2023-10-10 10:10:10");
-		assertEquals("Vote (from:TestService username:TestUser address:127.0.0.1 timeStamp:2023-10-10 10:10:10)",
-				vote.toString());
+	    Vote vote = new Vote("TestService", "TestUser", "127.0.0.1", "2023-10-10 10:10:10");
+	    vote.setSourceAddress("192.168.1.1"); // Set sourceAddress
+	    assertEquals("Vote (from:TestService username:TestUser address:127.0.0.1 timeStamp:2023-10-10 10:10:10, sourceAddress:192.168.1.1)",
+	            vote.toString());
 	}
 }

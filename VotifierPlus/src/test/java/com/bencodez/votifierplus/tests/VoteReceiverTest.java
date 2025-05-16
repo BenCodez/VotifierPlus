@@ -223,45 +223,49 @@ public class VoteReceiverTest {
 		assertEquals("testUser", vote.getUsername());
 		assertEquals("127.0.0.1", vote.getAddress());
 		assertEquals("TestTimestamp", vote.getTimeStamp());
+		vote.setSourceAddress("192.168.1.1"); // Add sourceAddress
+		assertEquals("192.168.1.1", vote.getSourceAddress());
 	}
 
 	@Test
 	public void testV2Vote() throws Exception {
-		// Construct a JSON payload for V2.
-		String challenge = "testChallenge";
-		JsonObject inner = new JsonObject();
-		inner.addProperty("serviceName", "votifier.bencodez.com");
-		inner.addProperty("username", "testUserV2");
-		inner.addProperty("address", "127.0.0.1");
-		inner.addProperty("timestamp", "TestTimestampV2");
-		inner.addProperty("challenge", challenge);
-		String payload = inner.toString();
+	    // Construct a JSON payload for V2.
+	    String challenge = "testChallenge";
+	    JsonObject inner = new JsonObject();
+	    inner.addProperty("serviceName", "votifier.bencodez.com");
+	    inner.addProperty("username", "testUserV2");
+	    inner.addProperty("address", "127.0.0.1");
+	    inner.addProperty("timestamp", "TestTimestampV2");
+	    inner.addProperty("challenge", challenge);
+	    String payload = inner.toString();
 
-		// Compute HMAC signature using dummyTokenKey.
-		Mac mac = Mac.getInstance("HmacSHA256");
-		mac.init(dummyTokenKey);
-		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
-		String signature = Base64.getEncoder().encodeToString(signatureBytes);
+	    // Compute HMAC signature using dummyTokenKey.
+	    Mac mac = Mac.getInstance("HmacSHA256"); // Declare and initialize mac
+	    mac.init(dummyTokenKey);
+	    byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+	    String signature = Base64.getEncoder().encodeToString(signatureBytes);
 
-		JsonObject outer = new JsonObject();
-		outer.addProperty("payload", payload);
-		outer.addProperty("signature", signature);
-		String jsonPayload = outer.toString();
+	    JsonObject outer = new JsonObject();
+	    outer.addProperty("payload", payload);
+	    outer.addProperty("signature", signature);
+	    String jsonPayload = outer.toString();
 
-		// Create a new TestVoteReceiver in token mode.
-		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
-			@Override
-			public boolean isUseTokens() {
-				return true;
-			}
-		};
-		Vote vote = tokenReceiver.processV2Vote(jsonPayload);
-		assertNotNull(vote);
-		assertEquals("votifier.bencodez.com", vote.getServiceName());
-		assertEquals("testUserV2", vote.getUsername());
-		assertEquals("127.0.0.1", vote.getAddress());
-		assertEquals("TestTimestampV2", vote.getTimeStamp());
-		tokenReceiver.shutdown();
+	    // Create a new TestVoteReceiver in token mode.
+	    TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+	        @Override
+	        public boolean isUseTokens() {
+	            return true;
+	        }
+	    };
+	    Vote vote = tokenReceiver.processV2Vote(jsonPayload);
+	    assertNotNull(vote);
+	    assertEquals("votifier.bencodez.com", vote.getServiceName());
+	    assertEquals("testUserV2", vote.getUsername());
+	    assertEquals("127.0.0.1", vote.getAddress());
+	    assertEquals("TestTimestampV2", vote.getTimeStamp());
+	    vote.setSourceAddress("192.168.1.2"); // Add sourceAddress
+	    assertEquals("192.168.1.2", vote.getSourceAddress());
+	    tokenReceiver.shutdown();
 	}
 
 	@Test
