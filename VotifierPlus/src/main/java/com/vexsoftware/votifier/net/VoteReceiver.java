@@ -171,8 +171,10 @@ public abstract class VoteReceiver extends Thread {
 	@Override
 	public void run() {
 		while (running) {
+			String address = "";
 			try (Socket socket = server.accept()) {
-				debug("Accepted connection from: " + socket.getRemoteSocketAddress());
+				address = socket.getRemoteSocketAddress().toString();
+				debug("Accepted connection from: " + address);
 				socket.setSoTimeout(5000);
 				PushbackInputStream in = new PushbackInputStream(socket.getInputStream(), 512);
 				BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
@@ -219,7 +221,7 @@ public abstract class VoteReceiver extends Thread {
 					}
 				}
 				if (in.available() == 0) {
-					debug("No vote payload received after handshake; closing connection.");
+					debug("No vote payload received after handshake; closing connection from " + address);
 					writer.close();
 					in.close();
 					socket.close();
@@ -237,7 +239,7 @@ public abstract class VoteReceiver extends Thread {
 					debug("Reading V1 vote block (256 bytes expected) at " + startTime + " ms");
 
 					if (in.available() < 256) {
-						debug("Insufficient data available for V1 vote block; closing connection.");
+						debug("Insufficient data available for V1 vote block; closing connection from " + address);
 						writer.close();
 						in.close();
 						socket.close();
@@ -248,7 +250,8 @@ public abstract class VoteReceiver extends Thread {
 							int remaining = block.length - totalRead;
 							int r = in.read(block, totalRead, remaining);
 							if (r == -1) {
-								debug("Reached end-of-stream unexpectedly after " + totalRead + " bytes.");
+								debug("Reached end-of-stream unexpectedly after " + totalRead + " bytes from "
+										+ address);
 								break;
 							}
 							totalRead += r;
@@ -264,7 +267,8 @@ public abstract class VoteReceiver extends Thread {
 									blockHex.append(String.format("%02X ", b));
 								}
 								logWarning(
-										"Decryption failed. Either the vote block is invalid or the public key does not match the server list.");
+										"Decryption failed. Either the vote block is invalid or the public key does not match the server list from "
+												+ address);
 								throw e;
 							}
 							int position = 0;
@@ -277,11 +281,11 @@ public abstract class VoteReceiver extends Thread {
 							position += serviceName.length() + 1;
 							String username = readString(decrypted, position);
 							position += username.length() + 1;
-							String address = readString(decrypted, position);
-							position += address.length() + 1;
+							String address1 = readString(decrypted, position);
+							position += address1.length() + 1;
 							String timeStamp = readString(decrypted, position);
 							position += timeStamp.length() + 1;
-							voteData = "VOTE\n" + serviceName + "\n" + username + "\n" + address + "\n" + timeStamp
+							voteData = "VOTE\n" + serviceName + "\n" + username + "\n" + address1 + "\n" + timeStamp
 									+ "\n";
 							debug("Processed V1 vote block.");
 						} else {
@@ -304,7 +308,7 @@ public abstract class VoteReceiver extends Thread {
 				}
 
 				// --- Parse Vote Data (V2 JSON mode) ---
-				String serviceName, username, address, timeStamp = "";
+				String serviceName, username, address1, timeStamp = "";
 				if (voteProtocolVersion.equals(VoteProtocolVersion.V2)) {
 					// Remove any extraneous characters before the first '{'
 					int firstBrace = voteData.indexOf('{');
@@ -316,7 +320,8 @@ public abstract class VoteReceiver extends Thread {
 					int jsonStart = voteData.indexOf("{");
 					int jsonEnd = voteData.lastIndexOf("}");
 					if (jsonStart == -1 || jsonEnd == -1 || jsonStart > jsonEnd) {
-						throw new Exception("Expected JSON-formatted vote payload, got: " + voteData);
+						throw new Exception(
+								"Expected JSON-formatted vote payload, got: " + voteData + " from " + address);
 					}
 					String jsonPayloadRaw = voteData.substring(jsonStart, jsonEnd + 1).trim();
 					debug("Extracted raw JSON payload: [" + jsonPayloadRaw + "]");
@@ -326,7 +331,7 @@ public abstract class VoteReceiver extends Thread {
 					if (jsonPayloadRaw.startsWith("[")) {
 						JsonArray jsonArray = gson.fromJson(jsonPayloadRaw, JsonArray.class);
 						if (jsonArray.size() == 0) {
-							throw new Exception("Empty JSON array in vote payload");
+							throw new Exception("Empty JSON array in vote payload from " + address);
 						}
 						voteMessage = jsonArray.get(0).getAsJsonObject();
 					} else {
@@ -358,18 +363,18 @@ public abstract class VoteReceiver extends Thread {
 
 					// Verify HMAC signature using the payload bytes.
 					if (!hmacEqual(sigBytes, payload.getBytes(StandardCharsets.UTF_8), key)) {
-						throw new Exception("Signature is not valid (invalid token?)");
+						throw new Exception("Signature is not valid (invalid token?) from " + address);
 					}
 
 					// Extract vote fields from the inner payload.
 					serviceName = serviceNameFromPayload;
 					username = votePayload.get("username").getAsString();
-					address = votePayload.get("address").getAsString();
+					address1 = votePayload.get("address").getAsString();
 					timeStamp = votePayload.get("timestamp").getAsString();
 
 					// Check the challenge.
 					if (!votePayload.has("challenge")) {
-						throw new Exception("Vote payload missing challenge field.");
+						throw new Exception("Vote payload missing challenge field from " + address);
 					}
 					String receivedChallenge = votePayload.get("challenge").getAsString().trim();
 					if (!receivedChallenge.equals(challenge.trim())) {
@@ -380,7 +385,7 @@ public abstract class VoteReceiver extends Thread {
 					String[] fields = voteData.split("\n");
 					serviceName = fields[1];
 					username = fields[2];
-					address = fields[3];
+					address1 = fields[3];
 					timeStamp = fields[4];
 				}
 
@@ -388,8 +393,13 @@ public abstract class VoteReceiver extends Thread {
 				final Vote vote = new Vote();
 				vote.setServiceName(serviceName);
 				vote.setUsername(username);
-				vote.setAddress(address);
+				vote.setAddress(address1);
 				vote.setTimeStamp(timeStamp);
+				if (address != null) {
+					vote.setSourceAddress(address);
+				} else {
+					vote.setSourceAddress("unknown");
+				}
 				if (timeStamp.equalsIgnoreCase("TestVote")) {
 					log("Test vote received");
 				}
@@ -442,24 +452,25 @@ public abstract class VoteReceiver extends Thread {
 				in.close();
 				socket.close();
 			} catch (MalformedJsonException ex) {
-				logWarning("Malformed JSON payload received: " + ex.getMessage());
+				logWarning("Malformed JSON payload received from: " + address + " - " + ex.getMessage());
 				debug(ex);
 			} catch (SocketException ex) {
 				if (running) {
-					logWarning("Protocol error. Ignoring packet - " + ex.getLocalizedMessage());
+					logWarning("Protocol error from: " + address + " - " + ex.getLocalizedMessage());
 					debug(ex);
 				} else {
 					logWarning("Votifier socket closed.");
 				}
 			} catch (BadPaddingException ex) {
-				logWarning("Unable to decrypt vote record. Make sure that your public key");
-				logWarning("matches the one you gave the server list.");
+				logWarning("Unable to decrypt vote record from: " + address
+						+ ". Make sure that your public key matches the one you gave the server list.");
 				debug(ex);
 			} catch (SocketTimeoutException ex) {
-				logWarning("Socket timeout while waiting for vote payload: " + ex.getMessage());
+				logWarning("Socket timeout while waiting for vote payload from: " + address + " - " + ex.getMessage());
 				debug(ex);
 			} catch (Exception ex) {
-				logWarning("Exception caught while receiving a vote notification: " + ex.getLocalizedMessage());
+				logWarning("Exception caught while receiving a vote notification from: " + address + " - "
+						+ ex.getLocalizedMessage());
 				debug(ex);
 			}
 		}

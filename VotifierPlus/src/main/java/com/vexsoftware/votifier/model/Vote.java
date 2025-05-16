@@ -18,6 +18,9 @@
 
 package com.vexsoftware.votifier.model;
 
+import lombok.Getter;
+import lombok.Setter;
+
 /**
  * A model for a vote.
  * 
@@ -37,6 +40,11 @@ public class Vote {
 	/** The date and time of the vote. */
 	private String timeStamp;
 
+	@Getter
+	@Setter
+	/** source of the connection of this vote */
+	private String sourceAddress;
+
 	public Vote(String serviceName, String username, String address, String timeStamp) {
 		this.serviceName = serviceName;
 		this.username = username;
@@ -51,7 +59,7 @@ public class Vote {
 	@Override
 	public String toString() {
 		return "Vote (from:" + serviceName + " username:" + username + " address:" + address + " timeStamp:" + timeStamp
-				+ ")";
+				+ ", sourceAddress:" + sourceAddress + ")";
 	}
 
 	/**
