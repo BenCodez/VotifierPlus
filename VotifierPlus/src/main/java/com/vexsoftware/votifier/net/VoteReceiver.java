@@ -300,7 +300,7 @@ public abstract class VoteReceiver extends Thread {
 					// In V2 mode, always parse as JSON.
 					ByteArrayOutputStream voteDataStream = new ByteArrayOutputStream();
 					int b;
-					while ((b = in.read()) != -1) {
+					while (in.available() > 0 && (b = in.read()) != -1) {
 						voteDataStream.write(b);
 					}
 					voteData = voteDataStream.toString("UTF-8").trim();
