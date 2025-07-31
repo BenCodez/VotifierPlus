@@ -13,3 +13,5 @@ Forwarding:
     Host: ''
     Port: ''
     Key: ''
+    # If token is set a token will be used instead of the key
+    Token: ''
