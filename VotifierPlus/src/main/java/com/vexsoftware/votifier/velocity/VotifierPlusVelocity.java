@@ -244,8 +244,13 @@ public class VotifierPlusVelocity {
 				@Override
 				public ForwardServer getServerData(String s) {
 					ConfigurationNode d = config.getServersData(s);
+					String token = d.getNode("Token").getString("");
+					Key tokenKey = null;
+					if (!token.isEmpty()) {
+						tokenKey = TokenUtil.createKeyFrom(token);
+					}
 					return new ForwardServer(d.getNode("Enabled").getBoolean(), d.getNode("Host").getString(),
-							d.getNode("Port").getInt(), d.getNode("Key").getString());
+							d.getNode("Port").getInt(), d.getNode("Key").getString(), tokenKey);
 				}
 
 				@Override

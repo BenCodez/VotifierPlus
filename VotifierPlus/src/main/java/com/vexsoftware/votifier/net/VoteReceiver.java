@@ -37,10 +37,11 @@
  */
 package com.vexsoftware.votifier.net;
 
+import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
 import java.net.InetSocketAddress;
@@ -421,30 +422,93 @@ public abstract class VoteReceiver extends Thread {
 				}
 
 				// --- Forward Vote to Other Servers ---
-				for (String server : getServers()) {
-					ForwardServer forwardServer = getServerData(server);
-					if (forwardServer.isEnabled()) {
-						debug("Forwarding vote to: " + server);
-						String voteString = "VOTE\n" + vote.getServiceName() + "\n" + vote.getUsername() + "\n"
-								+ vote.getAddress() + "\n" + vote.getTimeStamp() + "\n";
-						try {
-							SocketAddress sockAddr = new InetSocketAddress(forwardServer.getHost(),
-									forwardServer.getPort());
-							try (Socket forwardSocket = new Socket()) {
-								forwardSocket.connect(sockAddr, 1000);
-								OutputStream outStream = forwardSocket.getOutputStream();
+				for (String serverName : getServers()) {
+					ForwardServer forwardServer = getServerData(serverName);
+					if (!forwardServer.isEnabled())
+						continue;
+					debug("Forwarding vote to: " + serverName);
 
-								byte[] encrypted = encrypt(voteString.getBytes(StandardCharsets.UTF_8),
-										getPublicKey(forwardServer));
-								outStream.write(encrypted);
+					boolean targetUseTokens = forwardServer.isUseTokens();
+					String targetChallenge;
 
-								outStream.flush();
-							}
-						} catch (Exception e) {
-							log("Failed to forward vote to " + server + " (" + forwardServer.getHost() + ":"
-									+ forwardServer.getPort() + "): " + vote.toString());
-							debug(e);
+					try (Socket forwardSocket = new Socket()) {
+						SocketAddress sockAddr = new InetSocketAddress(forwardServer.getHost(),
+								forwardServer.getPort());
+						forwardSocket.connect(sockAddr, 1000);
+						forwardSocket.setSoTimeout(2000);
+
+						BufferedReader inFwd = new BufferedReader(
+								new InputStreamReader(forwardSocket.getInputStream(), StandardCharsets.UTF_8));
+						BufferedWriter outFwd = new BufferedWriter(
+								new OutputStreamWriter(forwardSocket.getOutputStream(), StandardCharsets.UTF_8));
+
+						// 1) Read handshake from target
+						String hello = inFwd.readLine();
+						debug("Received handshake from forward target: " + hello);
+
+						// 2) Send handshake
+						if (targetUseTokens) {
+							targetChallenge = TokenUtil.newToken();
+							outFwd.write("VOTIFIER 2 " + targetChallenge);
+						} else {
+							targetChallenge = null;
+							outFwd.write("VOTIFIER 1");
 						}
+						outFwd.newLine();
+						outFwd.flush();
+						debug("Sent handshake to forward target: "
+								+ (targetUseTokens ? "VOTIFIER 2 " + targetChallenge : "VOTIFIER 1"));
+
+						// 3) Prepare payload
+						byte[] payloadBytes;
+						if (targetUseTokens) {
+							// Build JSON
+							JsonObject voteJson = new JsonObject();
+							voteJson.addProperty("serviceName", vote.getServiceName());
+							voteJson.addProperty("username", vote.getUsername());
+							voteJson.addProperty("address", vote.getAddress());
+							voteJson.addProperty("timestamp", vote.getTimeStamp());
+							voteJson.addProperty("challenge", targetChallenge);
+							String inner = voteJson.toString();
+
+							// Lookup HMAC key from configured tokens
+							Key tokenKey = getTokens().get(vote.getServiceName());
+							if (tokenKey == null) {
+								tokenKey = getTokens().get("default");
+								if (tokenKey == null) {
+									throw new Exception(
+											"No HMAC token configured for service " + vote.getServiceName());
+								}
+							}
+
+							// Compute HMAC
+							Mac mac = Mac.getInstance("HmacSHA256");
+							mac.init(tokenKey);
+							byte[] signature = mac.doFinal(inner.getBytes(StandardCharsets.UTF_8));
+
+							JsonObject outer = new JsonObject();
+							outer.addProperty("payload", inner);
+							outer.addProperty("signature", Base64.getEncoder().encodeToString(signature));
+							String jsonPacket = outer.toString() + "\r\n";
+							payloadBytes = jsonPacket.getBytes(StandardCharsets.UTF_8);
+						} else {
+							// Legacy V1: RSA encrypt
+							String voteString = String.join("\n", "VOTE", vote.getServiceName(), vote.getUsername(),
+									vote.getAddress(), vote.getTimeStamp(), "") + "\n";
+							Cipher cipher = Cipher.getInstance("RSA");
+							cipher.init(Cipher.ENCRYPT_MODE, getPublicKey(forwardServer));
+							payloadBytes = cipher.doFinal(voteString.getBytes(StandardCharsets.UTF_8));
+						}
+
+						// 4) Send payload
+						forwardSocket.getOutputStream().write(payloadBytes);
+						forwardSocket.getOutputStream().flush();
+						debug("Forwarded vote to " + serverName + " successfully.");
+
+					} catch (Exception e) {
+						log("Failed to forward vote to " + serverName + " (" + forwardServer.getHost() + ":"
+								+ forwardServer.getPort() + "): " + vote);
+						debug(e);
 					}
 				}
 				callEvent(vote);

@@ -159,8 +159,13 @@ public class VotifierPlusBungee extends Plugin {
 				@Override
 				public ForwardServer getServerData(String s) {
 					Configuration d = config.getServerData(s);
+					String token = d.getString("Token", "");
+					Key tokenKey = null;
+					if (!token.isEmpty()) {
+						tokenKey = TokenUtil.createKeyFrom(token);
+					}
 					return new ForwardServer(d.getBoolean("Enabled"), d.getString("Host", ""), d.getInt("Port"),
-							d.getString("Key", ""));
+							d.getString("Key", ""), tokenKey);
 				}
 
 				@Override

@@ -293,8 +293,13 @@ public class VotifierPlus extends JavaPlugin {
 				@Override
 				public ForwardServer getServerData(String s) {
 					ConfigurationSection d = configFile.getForwardingConfiguration(s);
+					String token = d.getString("Token", "");
+					Key tokenKey = null;
+					if (!token.isEmpty()) {
+						tokenKey = TokenUtil.createKeyFrom(token);
+					}
 					return new ForwardServer(d.getBoolean("Enabled"), d.getString("Host", ""), d.getInt("Port"),
-							d.getString("Key", ""));
+							d.getString("Key", ""), tokenKey);
 				}
 
 				@Override
