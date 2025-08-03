@@ -455,12 +455,13 @@ public abstract class VoteReceiver extends Thread {
 	private void forwardVote(Vote vote) {
 		for (String name : getServers()) {
 			ForwardServer fs = getServerData(name);
-			debug("Preparing to forward vote to: " + name + ", tokens mode: " + fs.isUseTokens());
 
 			if (!fs.isEnabled()) {
-				debug("Skipping disabled server: " + name);
+				debug("Skipping disabled forward server: " + name);
 				continue;
 			}
+
+			debug("Preparing to forward vote to: " + name + ", tokens mode: " + fs.isUseTokens());
 
 			try (Socket s = new Socket()) {
 				s.connect(new InetSocketAddress(fs.getHost(), fs.getPort()), 1000);
