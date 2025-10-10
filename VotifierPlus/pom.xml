@@ -121,75 +121,70 @@
                 </executions>
             </plugin>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.6.1</version>
-                <configuration>
-                    <shadedArtifactAttached>false</shadedArtifactAttached>
-                    <relocations>
-                        <relocation>
-                            <pattern>com.bencodez.simpleapi</pattern>
-                            <shadedPattern>
-                                ${project.groupId}.votifierplus.simpleapi</shadedPattern>
-                        </relocation>
-                        <!-- Lets relocate the shaded API so we dont cause any
-                        conflicts with 
-                            other plugins -->
-                        <relocation>
-                            <pattern>com.bencodez.advancedcore</pattern>
-                            <shadedPattern>
-                                ${project.groupId}.${project.artifactId}.advancedcore</shadedPattern>
-                        </relocation>
-                        <!-- Lets relocate the shaded API so we dont cause any
-                        conflicts with 
-                            other plugins -->
-                        <relocation>
-                            <pattern>net.pl3x.bukkit.chatapi</pattern>
-                            <shadedPattern>
-                                ${project.groupId}.${project.artifactId}</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>me.mrten.mysqlapi</pattern>
-                            <shadedPattern>
-                                ${project.groupId}.${project.artifactId}.mysqlapi</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>com.zaxxer.HikariCP</pattern>
-                            <shadedPattern>
-                                ${project.groupId}.${project.artifactId}.HikariCP</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>com.zaxxer.hikari</pattern>
-                            <shadedPattern>
-                                ${project.groupId}.${project.artifactId}.hikari</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.bstats</pattern>
-                            <shadedPattern>
-                                ${project.groupId}.votingplugin.bstats</shadedPattern>
-                        </relocation>
-                    </relocations>
-                </configuration>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <artifactSet>
-                                <!-- Lets exclude google code, because the
-                                server already has this 
-                                    code in it (guava, etc) -->
-                                <excludes>
-                                    <exclude>com.google.*:*</exclude>
-                                </excludes>
-                            </artifactSet>
-                            <createDependencyReducedPom>false</createDependencyReducedPom>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-shade-plugin</artifactId>
+  <version>3.6.1</version>
+  <configuration>
+    <shadedArtifactAttached>false</shadedArtifactAttached>
+
+    <!-- ✨ CRITICAL: strip signatures from shaded deps -->
+    <filters>
+      <filter>
+        <artifact>*:*</artifact>
+        <excludes>
+          <exclude>META-INF/*.SF</exclude>
+          <exclude>META-INF/*.DSA</exclude>
+          <exclude>META-INF/*.RSA</exclude>
+        </excludes>
+      </filter>
+    </filters>
+
+    <relocations>
+      <relocation>
+        <pattern>com.bencodez.simpleapi</pattern>
+        <shadedPattern>${project.groupId}.votifierplus.simpleapi</shadedPattern>
+      </relocation>
+      <relocation>
+        <pattern>com.bencodez.advancedcore</pattern>
+        <shadedPattern>${project.groupId}.${project.artifactId}.advancedcore</shadedPattern>
+      </relocation>
+      <relocation>
+        <pattern>net.pl3x.bukkit.chatapi</pattern>
+        <shadedPattern>${project.groupId}.${project.artifactId}</shadedPattern>
+      </relocation>
+      <relocation>
+        <pattern>me.mrten.mysqlapi</pattern>
+        <shadedPattern>${project.groupId}.${project.artifactId}.mysqlapi</shadedPattern>
+      </relocation>
+      <relocation>
+        <pattern>com.zaxxer.HikariCP</pattern>
+        <shadedPattern>${project.groupId}.${project.artifactId}.HikariCP</shadedPattern>
+      </relocation>
+      <relocation>
+        <pattern>com.zaxxer.hikari</pattern>
+        <shadedPattern>${project.groupId}.${project.artifactId}.hikari</shadedPattern>
+      </relocation>
+      <relocation>
+        <pattern>org.bstats</pattern>
+        <shadedPattern>${project.groupId}.votingplugin.bstats</shadedPattern>
+      </relocation>
+    </relocations>
+  </configuration>
+  <executions>
+    <execution>
+      <phase>package</phase>
+      <goals><goal>shade</goal></goals>
+      <configuration>
+        <artifactSet>
+          <excludes>
+            <exclude>com.google.*:*</exclude>
+          </excludes>
+        </artifactSet>
+        <createDependencyReducedPom>false</createDependencyReducedPom>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
