@@ -99,9 +99,9 @@
                         </goals>
                         <configuration>
                             <sourceFile>
-                                        ${project.basedir}/target/${project.name}.jar</sourceFile>
+                                ${project.basedir}/target/${project.name}.jar</sourceFile>
                             <destinationFile>
-                                        ${project.basedir}/target/${project.name}-${project.version}.jar</destinationFile>
+                                ${project.basedir}/target/${project.name}-${project.version}.jar</destinationFile>
                         </configuration>
                     </execution>
                 </executions>
@@ -126,70 +126,72 @@
                 </executions>
             </plugin>
             <plugin>
-  <groupId>org.apache.maven.plugins</groupId>
-  <artifactId>maven-shade-plugin</artifactId>
-  <version>3.6.1</version>
-  <configuration>
-    <shadedArtifactAttached>false</shadedArtifactAttached>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.6.1</version>
+                <configuration>
+                    <shadedArtifactAttached>false</shadedArtifactAttached>
 
-    <!-- ✨ CRITICAL: strip signatures from shaded deps -->
-    <filters>
-      <filter>
-        <artifact>*:*</artifact>
-        <excludes>
-          <exclude>META-INF/*.SF</exclude>
-          <exclude>META-INF/*.DSA</exclude>
-          <exclude>META-INF/*.RSA</exclude>
-        </excludes>
-      </filter>
-    </filters>
+                    <!-- ✨ CRITICAL: strip signatures from shaded deps -->
+                    <filters>
+                        <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
 
-    <relocations>
-      <relocation>
-        <pattern>com.bencodez.simpleapi</pattern>
-        <shadedPattern>${project.groupId}.votifierplus.simpleapi</shadedPattern>
-      </relocation>
-      <relocation>
-        <pattern>com.bencodez.advancedcore</pattern>
-        <shadedPattern>${project.groupId}.${project.artifactId}.advancedcore</shadedPattern>
-      </relocation>
-      <relocation>
-        <pattern>net.pl3x.bukkit.chatapi</pattern>
-        <shadedPattern>${project.groupId}.${project.artifactId}</shadedPattern>
-      </relocation>
-      <relocation>
-        <pattern>me.mrten.mysqlapi</pattern>
-        <shadedPattern>${project.groupId}.${project.artifactId}.mysqlapi</shadedPattern>
-      </relocation>
-      <relocation>
-        <pattern>com.zaxxer.HikariCP</pattern>
-        <shadedPattern>${project.groupId}.${project.artifactId}.HikariCP</shadedPattern>
-      </relocation>
-      <relocation>
-        <pattern>com.zaxxer.hikari</pattern>
-        <shadedPattern>${project.groupId}.${project.artifactId}.hikari</shadedPattern>
-      </relocation>
-      <relocation>
-        <pattern>org.bstats</pattern>
-        <shadedPattern>${project.groupId}.votingplugin.bstats</shadedPattern>
-      </relocation>
-    </relocations>
-  </configuration>
-  <executions>
-    <execution>
-      <phase>package</phase>
-      <goals><goal>shade</goal></goals>
-      <configuration>
-        <artifactSet>
-          <excludes>
-            <exclude>com.google.*:*</exclude>
-          </excludes>
-        </artifactSet>
-        <createDependencyReducedPom>false</createDependencyReducedPom>
-      </configuration>
-    </execution>
-  </executions>
-</plugin>
+                    <relocations>
+                        <relocation>
+                            <pattern>com.bencodez.simpleapi</pattern>
+                            <shadedPattern>${project.groupId}.votifierplus.simpleapi</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.bencodez.advancedcore</pattern>
+                            <shadedPattern>${project.groupId}.${project.artifactId}.advancedcore</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>net.pl3x.bukkit.chatapi</pattern>
+                            <shadedPattern>${project.groupId}.${project.artifactId}</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>me.mrten.mysqlapi</pattern>
+                            <shadedPattern>${project.groupId}.${project.artifactId}.mysqlapi</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.zaxxer.HikariCP</pattern>
+                            <shadedPattern>${project.groupId}.${project.artifactId}.HikariCP</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.zaxxer.hikari</pattern>
+                            <shadedPattern>${project.groupId}.${project.artifactId}.hikari</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.bstats</pattern>
+                            <shadedPattern>${project.groupId}.votingplugin.bstats</shadedPattern>
+                        </relocation>
+                    </relocations>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <artifactSet>
+                                <excludes>
+                                    <exclude>com.google.*:*</exclude>
+                                </excludes>
+                            </artifactSet>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
@@ -248,6 +250,10 @@
             <url>https://oss.sonatype.org/content/repositories/snapshots</url>
         </repository>
         <repository>
+            <id>papermc</id>
+            <url>https://repo.papermc.io/repository/maven-public/</url>
+        </repository>
+        <repository>
             <id>velocity</id>
             <url>https://nexus.velocitypowered.com/repository/maven-public/</url>
         </repository>
@@ -274,7 +280,7 @@
         <dependency>
             <groupId>com.velocitypowered</groupId>
             <artifactId>velocity-api</artifactId>
-            <version>3.1.1</version>
+            <version>3.1.2-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
