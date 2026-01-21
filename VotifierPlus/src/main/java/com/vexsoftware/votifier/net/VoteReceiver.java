@@ -355,7 +355,7 @@ public abstract class VoteReceiver extends Thread {
 					if (key == null) {
 						key = getTokens().get("default");
 						if (key == null) {
-							throw new Exception("Unknown service '" + serviceNameFromPayload + "'");
+							throw new Exception("Unknown token for service '" + serviceNameFromPayload + "'");
 						}
 					}
 
