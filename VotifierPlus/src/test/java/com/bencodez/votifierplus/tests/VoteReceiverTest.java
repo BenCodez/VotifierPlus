@@ -323,6 +323,8 @@ public class VoteReceiverTest {
 	@Test
 	public void testV2VoteMissingPayloadField() throws Exception {
 		// Test V2 vote with missing "payload" field - should throw exception
+		// Note: Payload field validation occurs before signature validation,
+		// so we expect the payload error to be thrown first.
 		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
 			@Override
 			public boolean isUseTokens() {

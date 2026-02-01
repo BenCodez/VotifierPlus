@@ -241,7 +241,7 @@ public abstract class VoteReceiver extends Thread {
 
 					if (in.available() < 256) {
 						logWarning("Invalid vote format: Insufficient data for V1 vote block from " + address 
-								+ " (expected 256 bytes, available: " + in.available() + ")");
+								+ " (expected 256 bytes)");
 						debug("Insufficient data available for V1 vote block; closing connection from " + address);
 						writer.close();
 						in.close();
@@ -265,13 +265,19 @@ public abstract class VoteReceiver extends Thread {
 							try {
 								decrypted = RSA.decrypt(block, getKeyPair().getPrivate());
 							} catch (BadPaddingException e) {
+								// Log only the first 32 bytes as hex to avoid exposing full vote block
 								StringBuilder blockHex = new StringBuilder();
-								for (byte b : block) {
-									blockHex.append(String.format("%02X ", b));
+								int bytesToLog = Math.min(32, block.length);
+								for (int i = 0; i < bytesToLog; i++) {
+									blockHex.append(String.format("%02X ", block[i]));
+								}
+								if (block.length > bytesToLog) {
+									blockHex.append("... (truncated)");
 								}
 								logWarning(
 										"Decryption failed: Invalid V1 vote block or public key mismatch from "
-												+ address + ". Vote block (hex): " + blockHex.toString().trim());
+												+ address);
+								debug("Vote block preview (first 32 bytes): " + blockHex.toString().trim());
 								throw e;
 							}
 							int position = 0;
