@@ -319,4 +319,179 @@ public class VoteReceiverTest {
 		String output = new String(remaining, 0, read, StandardCharsets.US_ASCII);
 		assertEquals(remainingData, output);
 	}
+
+	@Test
+	public void testV2VoteMissingPayloadField() throws Exception {
+		// Test V2 vote with missing "payload" field - should throw exception
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("signature", "dummySignature");
+		// Missing "payload" field
+		String jsonPayload = outer.toString();
+
+		Exception exception = null;
+		try {
+			tokenReceiver.processV2Vote(jsonPayload);
+		} catch (Exception e) {
+			exception = e;
+		}
+
+		assertNotNull(exception, "Expected exception for missing payload field");
+		assertTrue(exception.getMessage().contains("Missing required 'payload' field"),
+				"Expected error message about missing payload field, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testV2VoteMissingSignatureField() throws Exception {
+		// Test V2 vote with missing "signature" field - should throw exception
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", "{}");
+		// Missing "signature" field
+		String jsonPayload = outer.toString();
+
+		Exception exception = null;
+		try {
+			tokenReceiver.processV2Vote(jsonPayload);
+		} catch (Exception e) {
+			exception = e;
+		}
+
+		assertNotNull(exception, "Expected exception for missing signature field");
+		assertTrue(exception.getMessage().contains("Missing required 'signature' field"),
+				"Expected error message about missing signature field, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testV2VoteMissingUsernameField() throws Exception {
+		// Test V2 vote with missing "username" field in inner payload
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		String challenge = "testChallenge";
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		// Missing "username" field
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestamp");
+		inner.addProperty("challenge", challenge);
+		String payload = inner.toString();
+
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+		String signature = Base64.getEncoder().encodeToString(signatureBytes);
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+		String jsonPayload = outer.toString();
+
+		Exception exception = null;
+		try {
+			tokenReceiver.processV2Vote(jsonPayload);
+		} catch (Exception e) {
+			exception = e;
+		}
+
+		assertNotNull(exception, "Expected exception for missing username field");
+		assertTrue(exception.getMessage().contains("Missing required 'username' field"),
+				"Expected error message about missing username field, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testV2VoteInvalidChallenge() throws Exception {
+		// Test V2 vote with incorrect challenge value
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", "testUser");
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestamp");
+		inner.addProperty("challenge", "wrongChallenge"); // Wrong challenge
+		String payload = inner.toString();
+
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+		String signature = Base64.getEncoder().encodeToString(signatureBytes);
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+		String jsonPayload = outer.toString();
+
+		Exception exception = null;
+		try {
+			tokenReceiver.processV2Vote(jsonPayload);
+		} catch (Exception e) {
+			exception = e;
+		}
+
+		assertNotNull(exception, "Expected exception for invalid challenge");
+		assertTrue(exception.getMessage().contains("Invalid challenge"),
+				"Expected error message about invalid challenge, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testV2VoteInvalidBase64Signature() throws Exception {
+		// Test V2 vote with invalid base64 signature
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", "testUser");
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestamp");
+		inner.addProperty("challenge", "testChallenge");
+		String payload = inner.toString();
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", "not-valid-base64!!!"); // Invalid base64
+		String jsonPayload = outer.toString();
+
+		Exception exception = null;
+		try {
+			tokenReceiver.processV2Vote(jsonPayload);
+		} catch (Exception e) {
+			exception = e;
+		}
+
+		assertNotNull(exception, "Expected exception for invalid base64 signature");
+		assertTrue(exception.getMessage().contains("Signature is not valid Base64"),
+				"Expected error message about invalid base64, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
 }
