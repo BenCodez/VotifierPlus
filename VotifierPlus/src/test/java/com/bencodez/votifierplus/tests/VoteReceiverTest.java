@@ -2,6 +2,7 @@ package com.bencodez.votifierplus.tests;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.BufferedWriter;
@@ -337,14 +338,10 @@ public class VoteReceiverTest {
 		// Missing "payload" field
 		String jsonPayload = outer.toString();
 
-		Exception exception = null;
-		try {
+		Exception exception = assertThrows(Exception.class, () -> {
 			tokenReceiver.processV2Vote(jsonPayload);
-		} catch (Exception e) {
-			exception = e;
-		}
+		});
 
-		assertNotNull(exception, "Expected exception for missing payload field");
 		assertTrue(exception.getMessage().contains("Missing required 'payload' field"),
 				"Expected error message about missing payload field, got: " + exception.getMessage());
 		tokenReceiver.shutdown();
@@ -365,14 +362,10 @@ public class VoteReceiverTest {
 		// Missing "signature" field
 		String jsonPayload = outer.toString();
 
-		Exception exception = null;
-		try {
+		Exception exception = assertThrows(Exception.class, () -> {
 			tokenReceiver.processV2Vote(jsonPayload);
-		} catch (Exception e) {
-			exception = e;
-		}
+		});
 
-		assertNotNull(exception, "Expected exception for missing signature field");
 		assertTrue(exception.getMessage().contains("Missing required 'signature' field"),
 				"Expected error message about missing signature field, got: " + exception.getMessage());
 		tokenReceiver.shutdown();
@@ -407,14 +400,10 @@ public class VoteReceiverTest {
 		outer.addProperty("signature", signature);
 		String jsonPayload = outer.toString();
 
-		Exception exception = null;
-		try {
+		Exception exception = assertThrows(Exception.class, () -> {
 			tokenReceiver.processV2Vote(jsonPayload);
-		} catch (Exception e) {
-			exception = e;
-		}
+		});
 
-		assertNotNull(exception, "Expected exception for missing username field");
 		assertTrue(exception.getMessage().contains("Missing required 'username' field"),
 				"Expected error message about missing username field, got: " + exception.getMessage());
 		tokenReceiver.shutdown();
@@ -448,14 +437,10 @@ public class VoteReceiverTest {
 		outer.addProperty("signature", signature);
 		String jsonPayload = outer.toString();
 
-		Exception exception = null;
-		try {
+		Exception exception = assertThrows(Exception.class, () -> {
 			tokenReceiver.processV2Vote(jsonPayload);
-		} catch (Exception e) {
-			exception = e;
-		}
+		});
 
-		assertNotNull(exception, "Expected exception for invalid challenge");
 		assertTrue(exception.getMessage().contains("Invalid challenge"),
 				"Expected error message about invalid challenge, got: " + exception.getMessage());
 		tokenReceiver.shutdown();
@@ -484,14 +469,10 @@ public class VoteReceiverTest {
 		outer.addProperty("signature", "not-valid-base64!!!"); // Invalid base64
 		String jsonPayload = outer.toString();
 
-		Exception exception = null;
-		try {
+		Exception exception = assertThrows(Exception.class, () -> {
 			tokenReceiver.processV2Vote(jsonPayload);
-		} catch (Exception e) {
-			exception = e;
-		}
+		});
 
-		assertNotNull(exception, "Expected exception for invalid base64 signature");
 		assertTrue(exception.getMessage().contains("Signature is not valid Base64"),
 				"Expected error message about invalid base64, got: " + exception.getMessage());
 		tokenReceiver.shutdown();
