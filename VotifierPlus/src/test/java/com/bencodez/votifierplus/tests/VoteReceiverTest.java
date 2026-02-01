@@ -127,6 +127,15 @@ public class VoteReceiverTest {
 			}
 			
 			String payload = outer.get("payload").getAsString();
+			String sigHash = outer.get("signature").getAsString();
+			
+			// Validate Base64 signature (matching main implementation).
+			try {
+				Base64.getDecoder().decode(sigHash);
+			} catch (IllegalArgumentException e) {
+				throw new Exception("Invalid vote format: Signature is not valid Base64 from test: " + e.getMessage());
+			}
+			
 			JsonObject inner = gson.fromJson(payload, JsonObject.class);
 			
 			// Validate required fields in inner payload (matching main implementation).
