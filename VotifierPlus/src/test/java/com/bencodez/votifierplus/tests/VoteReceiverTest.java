@@ -112,20 +112,46 @@ public class VoteReceiverTest {
 
 		/**
 		 * Process a V2 vote payload in JSON format.
+		 * This method mirrors the validation logic from the main VoteReceiver implementation.
 		 */
 		public Vote processV2Vote(String jsonPayload) throws Exception {
 			Gson gson = new Gson();
 			JsonObject outer = gson.fromJson(jsonPayload, JsonObject.class);
+			
+			// Validate and extract the outer payload and signature fields (matching main implementation).
+			if (!outer.has("payload")) {
+				throw new Exception("Invalid vote format: Missing required 'payload' field in outer JSON from test");
+			}
+			if (!outer.has("signature")) {
+				throw new Exception("Invalid vote format: Missing required 'signature' field in outer JSON from test");
+			}
+			
 			String payload = outer.get("payload").getAsString();
 			JsonObject inner = gson.fromJson(payload, JsonObject.class);
-			// Verify challenge.
-			if (!inner.has("challenge")) {
-				throw new Exception("Vote payload missing challenge field.");
+			
+			// Validate required fields in inner payload (matching main implementation).
+			if (!inner.has("serviceName")) {
+				throw new Exception("Invalid vote format: Missing required 'serviceName' field in vote payload from test");
 			}
+			if (!inner.has("username")) {
+				throw new Exception("Invalid vote format: Missing required 'username' field in vote payload from test");
+			}
+			if (!inner.has("address")) {
+				throw new Exception("Invalid vote format: Missing required 'address' field in vote payload from test");
+			}
+			if (!inner.has("timestamp")) {
+				throw new Exception("Invalid vote format: Missing required 'timestamp' field in vote payload from test");
+			}
+			if (!inner.has("challenge")) {
+				throw new Exception("Invalid vote format: Missing required 'challenge' field in vote payload from test");
+			}
+			
+			// Verify challenge.
 			String receivedChallenge = inner.get("challenge").getAsString();
 			if (!receivedChallenge.equals(getChallenge())) {
-				throw new Exception("Invalid challenge: expected " + getChallenge() + " but got " + receivedChallenge);
+				throw new Exception("Authentication failed: Invalid challenge (expected '" + getChallenge() + "' but got '" + receivedChallenge + "') from test");
 			}
+			
 			Vote vote = new Vote();
 			vote.setServiceName(inner.get("serviceName").getAsString());
 			vote.setUsername(inner.get("username").getAsString());
