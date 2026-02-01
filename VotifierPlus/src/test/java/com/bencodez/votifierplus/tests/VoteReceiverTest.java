@@ -2,6 +2,7 @@ package com.bencodez.votifierplus.tests;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.BufferedWriter;
@@ -111,20 +112,55 @@ public class VoteReceiverTest {
 
 		/**
 		 * Process a V2 vote payload in JSON format.
+		 * This method mirrors the validation logic from the main VoteReceiver implementation.
 		 */
 		public Vote processV2Vote(String jsonPayload) throws Exception {
 			Gson gson = new Gson();
 			JsonObject outer = gson.fromJson(jsonPayload, JsonObject.class);
-			String payload = outer.get("payload").getAsString();
-			JsonObject inner = gson.fromJson(payload, JsonObject.class);
-			// Verify challenge.
-			if (!inner.has("challenge")) {
-				throw new Exception("Vote payload missing challenge field.");
+			
+			// Validate and extract the outer payload and signature fields (matching main implementation).
+			if (!outer.has("payload")) {
+				throw new Exception("Invalid vote format: Missing required 'payload' field in outer JSON from test");
 			}
+			if (!outer.has("signature")) {
+				throw new Exception("Invalid vote format: Missing required 'signature' field in outer JSON from test");
+			}
+			
+			String payload = outer.get("payload").getAsString();
+			String sigHash = outer.get("signature").getAsString();
+			
+			// Validate Base64 signature (matching main implementation).
+			try {
+				Base64.getDecoder().decode(sigHash);
+			} catch (IllegalArgumentException e) {
+				throw new Exception("Invalid vote format: Signature is not valid Base64 from test: " + e.getMessage());
+			}
+			
+			JsonObject inner = gson.fromJson(payload, JsonObject.class);
+			
+			// Validate required fields in inner payload (matching main implementation).
+			if (!inner.has("serviceName")) {
+				throw new Exception("Invalid vote format: Missing required 'serviceName' field in vote payload from test");
+			}
+			if (!inner.has("username")) {
+				throw new Exception("Invalid vote format: Missing required 'username' field in vote payload from test");
+			}
+			if (!inner.has("address")) {
+				throw new Exception("Invalid vote format: Missing required 'address' field in vote payload from test");
+			}
+			if (!inner.has("timestamp")) {
+				throw new Exception("Invalid vote format: Missing required 'timestamp' field in vote payload from test");
+			}
+			if (!inner.has("challenge")) {
+				throw new Exception("Invalid vote format: Missing required 'challenge' field in vote payload from test");
+			}
+			
+			// Verify challenge.
 			String receivedChallenge = inner.get("challenge").getAsString();
 			if (!receivedChallenge.equals(getChallenge())) {
-				throw new Exception("Invalid challenge: expected " + getChallenge() + " but got " + receivedChallenge);
+				throw new Exception("Authentication failed: Invalid challenge (expected '" + getChallenge() + "' but got '" + receivedChallenge + "') from test");
 			}
+			
 			Vote vote = new Vote();
 			vote.setServiceName(inner.get("serviceName").getAsString());
 			vote.setUsername(inner.get("username").getAsString());
@@ -318,5 +354,162 @@ public class VoteReceiverTest {
 		int read = pis.read(remaining);
 		String output = new String(remaining, 0, read, StandardCharsets.US_ASCII);
 		assertEquals(remainingData, output);
+	}
+
+	@Test
+	public void testV2VoteMissingPayloadField() throws Exception {
+		// Test V2 vote with missing "payload" field - should throw exception
+		// Note: Payload field validation occurs before signature validation,
+		// so we expect the payload error to be thrown first.
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("signature", "dummySignature");
+		// Missing "payload" field
+		String jsonPayload = outer.toString();
+
+		Exception exception = assertThrows(Exception.class, () -> {
+			tokenReceiver.processV2Vote(jsonPayload);
+		});
+
+		assertTrue(exception.getMessage().contains("Missing required 'payload' field"),
+				"Expected error message about missing payload field, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testV2VoteMissingSignatureField() throws Exception {
+		// Test V2 vote with missing "signature" field - should throw exception
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", "{}");
+		// Missing "signature" field
+		String jsonPayload = outer.toString();
+
+		Exception exception = assertThrows(Exception.class, () -> {
+			tokenReceiver.processV2Vote(jsonPayload);
+		});
+
+		assertTrue(exception.getMessage().contains("Missing required 'signature' field"),
+				"Expected error message about missing signature field, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testV2VoteMissingUsernameField() throws Exception {
+		// Test V2 vote with missing "username" field in inner payload
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		String challenge = "testChallenge";
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		// Missing "username" field
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestamp");
+		inner.addProperty("challenge", challenge);
+		String payload = inner.toString();
+
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+		String signature = Base64.getEncoder().encodeToString(signatureBytes);
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+		String jsonPayload = outer.toString();
+
+		Exception exception = assertThrows(Exception.class, () -> {
+			tokenReceiver.processV2Vote(jsonPayload);
+		});
+
+		assertTrue(exception.getMessage().contains("Missing required 'username' field"),
+				"Expected error message about missing username field, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testV2VoteInvalidChallenge() throws Exception {
+		// Test V2 vote with incorrect challenge value
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", "testUser");
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestamp");
+		inner.addProperty("challenge", "wrongChallenge"); // Wrong challenge
+		String payload = inner.toString();
+
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+		String signature = Base64.getEncoder().encodeToString(signatureBytes);
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+		String jsonPayload = outer.toString();
+
+		Exception exception = assertThrows(Exception.class, () -> {
+			tokenReceiver.processV2Vote(jsonPayload);
+		});
+
+		assertTrue(exception.getMessage().contains("Invalid challenge"),
+				"Expected error message about invalid challenge, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testV2VoteInvalidBase64Signature() throws Exception {
+		// Test V2 vote with invalid base64 signature
+		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
+			@Override
+			public boolean isUseTokens() {
+				return true;
+			}
+		};
+
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", "testUser");
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestamp");
+		inner.addProperty("challenge", "testChallenge");
+		String payload = inner.toString();
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", "not-valid-base64!!!"); // Invalid base64
+		String jsonPayload = outer.toString();
+
+		Exception exception = assertThrows(Exception.class, () -> {
+			tokenReceiver.processV2Vote(jsonPayload);
+		});
+
+		assertTrue(exception.getMessage().contains("Signature is not valid Base64"),
+				"Expected error message about invalid base64, got: " + exception.getMessage());
+		tokenReceiver.shutdown();
 	}
 }
