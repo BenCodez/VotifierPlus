@@ -9,6 +9,111 @@ host: 0.0.0.0
 port: 8192
 # This is still new to VotifierPlus, so it's disabled by default.
 TokenSupport: false
+
+# -----------------------------------------------------------------------------
+# Connection throttling & spam reduction for Votifier
+#
+# Purpose:
+# - Reduce console spam from random scanners / port probes
+# - Prevent CPU waste from repeated invalid votes (bad padding, short payloads)
+# - Work safely behind tunnels (playit.gg) without blocking legit votes
+#
+# Notes:
+# - All time values use ParsedDuration (examples: 30s, 2m, 10m, 1h)
+# - Per-client bans ONLY apply when a real client IP is known
+#   (e.g. via PROXY protocol v1). If behind playit without PROXY,
+#   only tunnel-level throttling is used.
+# -----------------------------------------------------------------------------
+ConnectionThrottle:
+
+  # Master switch
+  Enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Tunnel detection
+  #
+  # If the remote socket IP matches one of these, the connection is treated as
+  # "tunnel mode" (e.g. playit.gg).
+  #
+  # In tunnel mode:
+  # - Lower failure thresholds are used
+  # - Longer throttle durations are applied
+  #
+  # IMPORTANT:
+  # - Do NOT add your own backend/proxy IPs here
+  # - Only add tunnel / egress IPs (playit, cloudflared, etc.)
+  # ---------------------------------------------------------------------------
+  TunnelRemoteIps:
+    - "127.0.0.1"   # playit.gg egress (example)
+    # - "x.x.x.x"       # add more if needed
+
+  # ---------------------------------------------------------------------------
+  # Sliding failure window
+  #
+  # If this many failures occur within the window, hard throttling starts.
+  #
+  # Failures counted include:
+  # - Invalid V1 block size
+  # - RSA bad padding / key mismatch
+  # - Malformed JSON (V2)
+  # - Invalid token / signature
+  # ---------------------------------------------------------------------------
+
+  # How long to track failures before resetting the counter
+  Window: "2m"
+
+  # Failures within the window before throttling (normal / non-tunnel)
+  Failures: 20
+
+  # How long to block further connections once throttled
+  ThrottleFor: "5m"
+
+  # ---------------------------------------------------------------------------
+  # Tunnel-mode overrides (playit, etc.)
+  #
+  # These are intentionally more aggressive because scanners all share
+  # the same tunnel IP.
+  # ---------------------------------------------------------------------------
+
+  # Failures before throttling when in tunnel mode
+  TunnelFailures: 8
+
+  # Throttle duration when in tunnel mode
+  TunnelThrottleFor: "10m"
+
+  # ---------------------------------------------------------------------------
+  # Per-client bans (ONLY when real client IP is known)
+  #
+  # Requires:
+  # - PROXY protocol v1 providing the real source IP
+  #
+  # If enabled and the same real IP repeatedly fails validation,
+  # that IP will be temporarily banned.
+  #
+  # If real IP is NOT known (typical playit setup),
+  # this section is ignored automatically.
+  # ---------------------------------------------------------------------------
+  PerClientBan:
+
+    # Enable per-client banning
+    Enabled: true
+
+    # Failures within the window before banning a real client IP
+    Failures: 6
+
+    # How long the real client IP is banned
+    BanFor: "15m"
+
+  # ---------------------------------------------------------------------------
+  # Log rate limiting
+  #
+  # Prevents console spam by allowing only ONE warning per key
+  # (IP + error type) per window.
+  #
+  # Additional messages are suppressed and summarized.
+  # ---------------------------------------------------------------------------
+  LogWindow: "60s"
+
 # If your using VotingPlugin you don't need this
 # Doesn't support tokens yet
 Forwarding:

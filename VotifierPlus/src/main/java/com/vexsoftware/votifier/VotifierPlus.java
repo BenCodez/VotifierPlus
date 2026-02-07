@@ -28,6 +28,7 @@ import java.security.CodeSource;
 import java.security.Key;
 import java.security.KeyPair;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -335,6 +336,52 @@ public class VotifierPlus extends JavaPlugin {
 				public boolean isUseTokens() {
 					return configFile.isTokenSupport();
 				}
+
+				@Override
+				public ThrottleConfig getThrottleConfig() {
+					ConfigurationSection root = getConfigFile().getData().getConfigurationSection("ConnectionThrottle");
+
+					if (root == null) {
+						return new ThrottleConfig(false, Collections.<String>emptySet(), "2m", 20, "5m", 8, "10m", true,
+								6, "15m", "60s");
+					}
+
+					boolean enabled = root.getBoolean("Enabled", true);
+
+					java.util.List<String> ips = root.getStringList("TunnelRemoteIps");
+					java.util.Set<String> tunnelIps = new java.util.HashSet<String>();
+					if (ips != null) {
+						for (String s : ips) {
+							if (s != null) {
+								s = s.trim();
+								if (!s.isEmpty())
+									tunnelIps.add(s);
+							}
+						}
+					}
+					if (tunnelIps.isEmpty())
+						tunnelIps = Collections.<String>emptySet();
+					else
+						tunnelIps = Collections.unmodifiableSet(tunnelIps);
+
+					String window = root.getString("Window", "2m");
+					int failures = root.getInt("Failures", 20);
+					String throttleFor = root.getString("ThrottleFor", "5m");
+
+					int tunnelFailures = root.getInt("TunnelFailures", Math.max(3, failures / 2));
+					String tunnelThrottleFor = root.getString("TunnelThrottleFor", "10m");
+
+					ConfigurationSection ban = root.getConfigurationSection("PerClientBan");
+					boolean banEnabled = ban == null ? true : ban.getBoolean("Enabled", true);
+					int banFailures = ban == null ? 6 : ban.getInt("Failures", 6);
+					String banFor = ban == null ? "15m" : ban.getString("BanFor", "15m");
+
+					String logWindow = root.getString("LogWindow", "60s");
+
+					return new ThrottleConfig(enabled, tunnelIps, window, failures, throttleFor, tunnelFailures,
+							tunnelThrottleFor, banEnabled, banFailures, banFor, logWindow);
+				}
+
 			};
 			voteReceiver.start();
 

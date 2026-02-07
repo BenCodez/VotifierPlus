@@ -12,8 +12,10 @@ import java.nio.file.Path;
 import java.security.CodeSource;
 import java.security.Key;
 import java.security.KeyPair;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipEntry;
@@ -22,6 +24,8 @@ import java.util.zip.ZipInputStream;
 import org.bstats.charts.SimplePie;
 import org.bstats.velocity.Metrics;
 import org.slf4j.Logger;
+import org.spongepowered.configurate.ConfigurationNode;
+import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
 
 import com.google.inject.Inject;
 import com.velocitypowered.api.command.CommandMeta;
@@ -40,8 +44,6 @@ import com.vexsoftware.votifier.net.VoteReceiver;
 
 import lombok.Getter;
 import lombok.Setter;
-import ninja.leaping.configurate.ConfigurationNode;
-import ninja.leaping.configurate.yaml.YAMLConfigurationLoader;
 
 @Plugin(id = "votifierplus", name = "VotifierPlus", version = "1.0", url = "https://www.spigotmc.org/resources/votifierplus.74040", description = "Votifier Velocity Version", authors = {
 		"BenCodez" })
@@ -85,7 +87,9 @@ public class VotifierPlusVelocity {
 		}
 
 		for (ConfigurationNode key : config.getTokens()) {
-			tokens.put(key.getKey().toString(), TokenUtil.createKeyFrom(config.getToken(key.getKey().toString())));
+			// Configurate 4: key() replaces getKey()
+			String tokenId = String.valueOf(key.key());
+			tokens.put(tokenId, TokenUtil.createKeyFrom(config.getToken(tokenId)));
 		}
 	}
 
@@ -117,13 +121,18 @@ public class VotifierPlusVelocity {
 								}
 
 								fileWriter.close();
-								YAMLConfigurationLoader loader = YAMLConfigurationLoader.builder().setFile(versionFile)
-										.build();
+
+								// Configurate 4 YAML loader
+								YamlConfigurationLoader loader = YamlConfigurationLoader.builder()
+										.path(versionFile.toPath()).build();
+
 								defConfigStream.close();
+
 								ConfigurationNode node = loader.load();
 								if (node != null) {
-									version = node.getNode("version").getString("");
-									buildNumber = node.getNode("buildnumber").getString("NOTSET");
+									// Configurate 4: node("x") replaces getNode("x")
+									version = node.node("version").getString("");
+									buildNumber = node.node("buildnumber").getString("NOTSET");
 								}
 								return;
 							}
@@ -236,7 +245,8 @@ public class VotifierPlusVelocity {
 				public Set<String> getServers() {
 					Set<String> servers = new HashSet<String>();
 					for (ConfigurationNode node : config.getServers()) {
-						servers.add(node.getKey().toString());
+						// Configurate 4: key() replaces getKey()
+						servers.add(String.valueOf(node.key()));
 					}
 					return servers;
 				}
@@ -244,13 +254,15 @@ public class VotifierPlusVelocity {
 				@Override
 				public ForwardServer getServerData(String s) {
 					ConfigurationNode d = config.getServersData(s);
-					String token = d.getNode("Token").getString("");
+
+					// Configurate 4: node("x") replaces getNode("x")
+					String token = d.node("Token").getString("");
 					Key tokenKey = null;
 					if (!token.isEmpty()) {
 						tokenKey = TokenUtil.createKeyFrom(token);
 					}
-					return new ForwardServer(d.getNode("Enabled").getBoolean(), d.getNode("Host").getString(),
-							d.getNode("Port").getInt(), d.getNode("Key").getString(), tokenKey);
+					return new ForwardServer(d.node("Enabled").getBoolean(), d.node("Host").getString(),
+							d.node("Port").getInt(), d.node("Key").getString(), tokenKey);
 				}
 
 				@Override
@@ -286,6 +298,53 @@ public class VotifierPlusVelocity {
 				public boolean isUseTokens() {
 					return config.getTokenSupport();
 				}
+
+				@Override
+				public ThrottleConfig getThrottleConfig() {
+					ConfigurationNode root = getConfig().getNode("ConnectionThrottle");
+					if (root == null || root.virtual()) {
+						return new ThrottleConfig(false, Collections.<String>emptySet(), "2m", 20, "5m", 8, "10m", true,
+								6, "15m", "60s");
+					}
+
+					boolean enabled = root.node("Enabled").getBoolean(true);
+
+					Set<String> tunnelIps = new HashSet<String>();
+					ConfigurationNode ipsNode = root.node("TunnelRemoteIps");
+					if (!ipsNode.virtual()) {
+						List<? extends ConfigurationNode> list = ipsNode.childrenList();
+						for (ConfigurationNode n : list) {
+							Object raw = n.raw();
+							if (raw != null) {
+								String s = String.valueOf(raw).trim();
+								if (!s.isEmpty())
+									tunnelIps.add(s);
+							}
+						}
+					}
+					if (tunnelIps.isEmpty())
+						tunnelIps = Collections.<String>emptySet();
+					else
+						tunnelIps = Collections.unmodifiableSet(tunnelIps);
+
+					String window = root.node("Window").getString("2m");
+					int failures = root.node("Failures").getInt(20);
+					String throttleFor = root.node("ThrottleFor").getString("5m");
+
+					int tunnelFailures = root.node("TunnelFailures").getInt(Math.max(3, failures / 2));
+					String tunnelThrottleFor = root.node("TunnelThrottleFor").getString("10m");
+
+					ConfigurationNode ban = root.node("PerClientBan");
+					boolean banEnabled = ban.node("Enabled").getBoolean(true);
+					int banFailures = ban.node("Failures").getInt(6);
+					String banFor = ban.node("BanFor").getString("15m");
+
+					String logWindow = root.node("LogWindow").getString("60s");
+
+					return new ThrottleConfig(enabled, tunnelIps, window, failures, throttleFor, tunnelFailures,
+							tunnelThrottleFor, banEnabled, banFailures, banFor, logWindow);
+				}
+
 			};
 			voteReceiver.start();
 

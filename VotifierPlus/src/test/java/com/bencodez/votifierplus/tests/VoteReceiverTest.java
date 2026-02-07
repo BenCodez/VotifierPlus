@@ -242,6 +242,11 @@ public class VoteReceiverTest {
 		public String getChallenge() {
 			return testChallenge;
 		}
+
+		@Override
+		public ThrottleConfig getThrottleConfig() {
+			return null;
+		}
 	}
 
 	@Test

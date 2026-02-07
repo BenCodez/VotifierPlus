@@ -4,10 +4,10 @@ import java.io.File;
 import java.util.Collection;
 
 import org.checkerframework.checker.nullness.qual.NonNull;
+import org.spongepowered.configurate.ConfigurationNode;
+import org.spongepowered.configurate.serialize.SerializationException;
 
 import com.bencodez.simpleapi.file.velocity.VelocityYMLFile;
-
-import ninja.leaping.configurate.ConfigurationNode;
 
 public class Config extends VelocityYMLFile {
 
@@ -28,7 +28,7 @@ public class Config extends VelocityYMLFile {
 	}
 
 	public @NonNull Collection<? extends ConfigurationNode> getServers() {
-		return getNode("Forwarding").getChildrenMap().values();
+		return getNode("Forwarding").childrenMap().values();
 	}
 
 	public ConfigurationNode getServersData(String s) {
@@ -36,7 +36,7 @@ public class Config extends VelocityYMLFile {
 	}
 
 	public @NonNull Collection<? extends ConfigurationNode> getTokens() {
-		return getNode("tokens").getChildrenMap().values();
+		return getNode("tokens").childrenMap().values();
 	}
 
 	public String getToken(String key) {
@@ -44,11 +44,15 @@ public class Config extends VelocityYMLFile {
 	}
 
 	public boolean containsTokens() {
-		return getNode("tokens").getValue() != null;
+		return !getNode("tokens").virtual();
 	}
 
 	public void setToken(String key, String token) {
-		getNode("tokens", key).setValue(token);
+		try {
+			getNode("tokens", key).set(token);
+		} catch (SerializationException e) {
+			e.printStackTrace();
+		}
 		save();
 	}
 
