@@ -40,6 +40,10 @@
  * - Tunnel-aware throttling (e.g. playit.gg egress IP) with more aggressive thresholds
  * - Optional per-client bans only when a real client IP is known (e.g. PROXY v1)
  * - ParsedDuration used for all timing config strings
+ *
+ * NOTE:
+ * - This class intentionally avoids any "extra debug" mode. Stack traces are only emitted
+ *   if your concrete debug(Exception) chooses to print them.
  */
 package com.vexsoftware.votifier.net;
 
@@ -63,6 +67,7 @@ import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -143,7 +148,13 @@ public abstract class VoteReceiver extends Thread {
 				int perClientBanFailures, String perClientBanFor, String logWindow) {
 
 			this.enabled = enabled;
-			this.tunnelRemoteIps = tunnelRemoteIps == null ? new HashSet<String>() : tunnelRemoteIps;
+
+			// Keep this immutable to avoid accidental modifications.
+			if (tunnelRemoteIps == null || tunnelRemoteIps.isEmpty()) {
+				this.tunnelRemoteIps = Collections.<String>emptySet();
+			} else {
+				this.tunnelRemoteIps = Collections.unmodifiableSet(new HashSet<String>(tunnelRemoteIps));
+			}
 
 			this.windowMs = safeDurationMs(window, 2 * 60_000L); // default 2m
 			this.failures = failures;
@@ -182,7 +193,7 @@ public abstract class VoteReceiver extends Thread {
 			volatile int suppressed;
 		}
 
-		private final ConcurrentHashMap<String, State> states = new ConcurrentHashMap<>();
+		private final ConcurrentHashMap<String, State> states = new ConcurrentHashMap<String, State>();
 		private final long windowMs;
 
 		public LogLimiter(long windowMs) {
@@ -191,7 +202,12 @@ public abstract class VoteReceiver extends Thread {
 
 		public String allow(String key, String msg) {
 			long now = System.currentTimeMillis();
-			State st = states.computeIfAbsent(key, k -> new State());
+			State st = states.get(key);
+			if (st == null) {
+				State n = new State();
+				State prev = states.putIfAbsent(key, n);
+				st = (prev == null) ? n : prev;
+			}
 
 			if (now - st.lastLogMs >= windowMs) {
 				int suppressed = st.suppressed;
@@ -221,7 +237,7 @@ public abstract class VoteReceiver extends Thread {
 			volatile long bannedUntilMs;
 		}
 
-		private final ConcurrentHashMap<String, State> map = new ConcurrentHashMap<>();
+		private final ConcurrentHashMap<String, State> map = new ConcurrentHashMap<String, State>();
 		private final ThrottleConfig cfg;
 
 		public ThrottleManager(ThrottleConfig cfg) {
@@ -229,7 +245,7 @@ public abstract class VoteReceiver extends Thread {
 		}
 
 		public boolean isBlocked(String key) {
-			if (!cfg.enabled)
+			if (cfg == null || !cfg.enabled)
 				return false;
 			long now = System.currentTimeMillis();
 			State s = map.get(key);
@@ -247,15 +263,17 @@ public abstract class VoteReceiver extends Thread {
 		}
 
 		public void fail(String key, boolean tunnelMode, boolean realIpKnown) {
-			if (!cfg.enabled)
+			if (cfg == null || !cfg.enabled)
 				return;
 
 			long now = System.currentTimeMillis();
-			State s = map.computeIfAbsent(key, k -> {
+			State s = map.get(key);
+			if (s == null) {
 				State n = new State();
 				n.windowStartMs = now;
-				return n;
-			});
+				State prev = map.putIfAbsent(key, n);
+				s = (prev == null) ? n : prev;
+			}
 
 			// reset window
 			if (now - s.windowStartMs > cfg.windowMs) {
@@ -298,6 +316,7 @@ public abstract class VoteReceiver extends Thread {
 	// These are initialized lazily in run() once config exists.
 	private volatile ThrottleManager throttle;
 	private volatile LogLimiter warnLimiter;
+	private volatile ThrottleConfig cachedThrottleConfig;
 
 	public VoteReceiver(String host, int port) throws Exception {
 		super("Votifier I/O");
@@ -374,23 +393,30 @@ public abstract class VoteReceiver extends Thread {
 
 	@Override
 	public void run() {
+		// Cache config once per thread lifetime (matches your current design).
+		this.cachedThrottleConfig = getThrottleConfig();
+
 		// Initialize throttle/warn limiter once (safe defaults if config missing)
-		ThrottleConfig cfg = getThrottleConfig();
-		if (cfg != null && cfg.enabled) {
-			this.throttle = new ThrottleManager(cfg);
-			this.warnLimiter = new LogLimiter(cfg.logWindowMs);
+		if (cachedThrottleConfig != null && cachedThrottleConfig.enabled) {
+			this.throttle = new ThrottleManager(cachedThrottleConfig);
+			this.warnLimiter = new LogLimiter(cachedThrottleConfig.logWindowMs);
 		} else {
-			// Still create a small limiter so we can reduce spam even when throttling
-			// disabled
+			// Still create a limiter so we can reduce spam even when throttling disabled
 			this.warnLimiter = new LogLimiter(60_000L);
 		}
 
 		while (running) {
 			String address = "";
 			String remoteIp = "unknown";
+			String throttleKey = null;
+			boolean tunnelMode = false;
+			boolean realIpKnown = false;
+
 			try (Socket socket = server.accept()) {
-				address = socket.getRemoteSocketAddress().toString();
-				remoteIp = extractIp(address);
+
+				// IMPORTANT: use remote IP only (not /ip:port) so throttling works.
+				remoteIp = socket.getInetAddress().getHostAddress();
+				address = socket.getRemoteSocketAddress() == null ? ("/" + remoteIp) : socket.getRemoteSocketAddress().toString();
 
 				debug("Accepted connection from: " + address);
 				socket.setSoTimeout(5000);
@@ -429,16 +455,15 @@ public abstract class VoteReceiver extends Thread {
 				if (in.available() > 0) {
 					realIp = processProxyHeaders(in, writer);
 				}
-				boolean realIpKnown = realIp != null && !realIp.isEmpty();
+				realIpKnown = realIp != null && !realIp.isEmpty();
 
 				// Tunnel-aware throttling key choice:
 				// - If we know real IP, key by that (safe per-client ban).
 				// - Otherwise, key by remote egress IP (tunnel profile).
-				boolean tunnelMode = false;
-				if (cfg != null && cfg.enabled) {
-					tunnelMode = (!realIpKnown && cfg.tunnelRemoteIps.contains(remoteIp));
+				if (cachedThrottleConfig != null && cachedThrottleConfig.enabled) {
+					tunnelMode = (!realIpKnown && cachedThrottleConfig.tunnelRemoteIps.contains(remoteIp));
 				}
-				String throttleKey = realIpKnown ? ("ip:" + realIp) : ("tunnel:" + remoteIp);
+				throttleKey = realIpKnown ? ("ip:" + realIp) : ("tunnel:" + remoteIp);
 
 				// Early throttle gate: if blocked, drop quietly (rate-limited warning).
 				if (throttle != null && throttle.isBlocked(throttleKey)) {
@@ -449,14 +474,8 @@ public abstract class VoteReceiver extends Thread {
 					if (toLog != null)
 						logWarning(toLog);
 
-					try {
-						writer.close();
-					} catch (Exception ignored) {
-					}
-					try {
-						in.close();
-					} catch (Exception ignored) {
-					}
+					closeQuietly(writer);
+					closeQuietly(in);
 					socket.close();
 					continue;
 				}
@@ -472,14 +491,8 @@ public abstract class VoteReceiver extends Thread {
 				}
 				if (in.available() == 0) {
 					debug("No vote payload received after handshake; closing connection from " + address);
-					try {
-						writer.close();
-					} catch (Exception ignored) {
-					}
-					try {
-						in.close();
-					} catch (Exception ignored) {
-					}
+					closeQuietly(writer);
+					closeQuietly(in);
 					socket.close();
 					continue;
 				}
@@ -495,8 +508,7 @@ public abstract class VoteReceiver extends Thread {
 					int totalRead = 0;
 
 					if (in.available() < 256) {
-						// This is extremely common for scanners/port probes; treat as throttled
-						// warning.
+						// Common scanner/port probe; throttle + rate-limited warning.
 						if (throttle != null)
 							throttle.fail(throttleKey, tunnelMode, realIpKnown);
 
@@ -506,15 +518,8 @@ public abstract class VoteReceiver extends Thread {
 						if (toLog != null)
 							logWarning(toLog);
 
-						debug("Insufficient data available for V1 vote block; closing connection from " + address);
-						try {
-							writer.close();
-						} catch (Exception ignored) {
-						}
-						try {
-							in.close();
-						} catch (Exception ignored) {
-						}
+						closeQuietly(writer);
+						closeQuietly(in);
 						socket.close();
 						continue;
 					}
@@ -523,7 +528,6 @@ public abstract class VoteReceiver extends Thread {
 						int remaining = block.length - totalRead;
 						int r = in.read(block, totalRead, remaining);
 						if (r == -1) {
-							debug("Reached end-of-stream unexpectedly after " + totalRead + " bytes from " + address);
 							break;
 						}
 						totalRead += r;
@@ -544,16 +548,7 @@ public abstract class VoteReceiver extends Thread {
 							if (toLog != null)
 								logWarning(toLog);
 
-							// Debug only: preview to avoid exposing full block
-							StringBuilder blockHex = new StringBuilder();
-							int bytesToLog = Math.min(32, block.length);
-							for (int i = 0; i < bytesToLog; i++) {
-								blockHex.append(String.format("%02X ", block[i]));
-							}
-							if (block.length > bytesToLog) {
-								blockHex.append("... (truncated)");
-							}
-							debug("Vote block preview (first 32 bytes): " + blockHex.toString().trim());
+							// Do not print stack traces here; concrete implementation can decide.
 							throw e;
 						}
 
@@ -588,15 +583,8 @@ public abstract class VoteReceiver extends Thread {
 						if (toLog != null)
 							logWarning(toLog);
 
-						debug("Failed to read V1 vote, expected 256 bytes, got " + totalRead);
-						try {
-							writer.close();
-						} catch (Exception ignored) {
-						}
-						try {
-							in.close();
-						} catch (Exception ignored) {
-						}
+						closeQuietly(writer);
+						closeQuietly(in);
 						socket.close();
 						continue;
 					}
@@ -628,8 +616,7 @@ public abstract class VoteReceiver extends Thread {
 					if (jsonStart == -1 || jsonEnd == -1 || jsonStart > jsonEnd) {
 						if (throttle != null)
 							throttle.fail(throttleKey, tunnelMode, realIpKnown);
-						throw new Exception(
-								"Invalid vote format: Expected JSON-formatted vote payload from " + address);
+						throw new Exception("Invalid vote format: Expected JSON-formatted vote payload from " + address);
 					}
 
 					String jsonPayloadRaw = voteData.substring(jsonStart, jsonEnd + 1).trim();
@@ -641,8 +628,7 @@ public abstract class VoteReceiver extends Thread {
 						if (jsonArray.size() == 0) {
 							if (throttle != null)
 								throttle.fail(throttleKey, tunnelMode, realIpKnown);
-							throw new Exception(
-									"Invalid vote format: Empty JSON array in vote payload from " + address);
+							throw new Exception("Invalid vote format: Empty JSON array in vote payload from " + address);
 						}
 						voteMessage = jsonArray.get(0).getAsJsonObject();
 					} else {
@@ -652,8 +638,7 @@ public abstract class VoteReceiver extends Thread {
 					if (!voteMessage.has("payload") || !voteMessage.has("signature")) {
 						if (throttle != null)
 							throttle.fail(throttleKey, tunnelMode, realIpKnown);
-						throw new Exception(
-								"Invalid vote format: Missing required fields in outer JSON from " + address);
+						throw new Exception("Invalid vote format: Missing required fields in outer JSON from " + address);
 					}
 
 					String payload = voteMessage.get("payload").getAsString();
@@ -684,8 +669,7 @@ public abstract class VoteReceiver extends Thread {
 							|| !votePayload.has("timestamp") || !votePayload.has("challenge")) {
 						if (throttle != null)
 							throttle.fail(throttleKey, tunnelMode, realIpKnown);
-						throw new Exception(
-								"Invalid vote format: Missing required fields in inner JSON from " + address);
+						throw new Exception("Invalid vote format: Missing required fields in inner JSON from " + address);
 					}
 
 					String serviceNameFromPayload = votePayload.get("serviceName").getAsString();
@@ -697,8 +681,8 @@ public abstract class VoteReceiver extends Thread {
 						if (key == null) {
 							if (throttle != null)
 								throttle.fail(throttleKey, tunnelMode, realIpKnown);
-							throw new Exception("Authentication failed: Unknown token for service '"
-									+ serviceNameFromPayload + "' from " + address);
+							throw new Exception("Authentication failed: Unknown token for service '" + serviceNameFromPayload
+									+ "' from " + address);
 						}
 						debug("Using default token for service: " + serviceNameFromPayload);
 					} else {
@@ -707,7 +691,7 @@ public abstract class VoteReceiver extends Thread {
 
 					// Verify HMAC signature using the payload bytes.
 					if (!hmacEqual(sigBytes, payload.getBytes(StandardCharsets.UTF_8), key)) {
-						// invalid signature is a common scanner/noise case; throttle it
+						// invalid signature is common scanner/noise; throttle it
 						if (throttle != null)
 							throttle.fail(throttleKey, tunnelMode, realIpKnown);
 
@@ -717,9 +701,8 @@ public abstract class VoteReceiver extends Thread {
 						if (toLog != null)
 							logWarning(toLog);
 
-						throw new Exception(
-								"Authentication failed: Signature verification failed (invalid token?) for service '"
-										+ serviceNameFromPayload + "' from " + address);
+						throw new Exception("Authentication failed: Signature verification failed (invalid token?) for service '"
+								+ serviceNameFromPayload + "' from " + address);
 					}
 
 					serviceName = serviceNameFromPayload;
@@ -752,10 +735,8 @@ public abstract class VoteReceiver extends Thread {
 				// Source address: prefer real client IP if known (PROXY v1)
 				if (realIpKnown) {
 					vote.setSourceAddress(realIp);
-				} else if (address != null) {
-					vote.setSourceAddress(address);
 				} else {
-					vote.setSourceAddress("unknown");
+					vote.setSourceAddress(remoteIp);
 				}
 
 				if (timeStamp.equalsIgnoreCase("TestVote")) {
@@ -764,7 +745,7 @@ public abstract class VoteReceiver extends Thread {
 
 				log("Received vote record -> " + vote);
 
-				// Success: reset throttle state for this key so legit votes don't get punished
+				// Success: reset throttle state so legit votes don't get punished
 				if (throttle != null)
 					throttle.success(throttleKey);
 
@@ -778,31 +759,34 @@ public abstract class VoteReceiver extends Thread {
 						writer.flush();
 						debug("Sent OK response: " + okMessage);
 					} catch (Exception e) {
-						debug("Failed to send OK response, but will continue to process vote: "
-								+ e.getLocalizedMessage());
+						debug("Failed to send OK response, but will continue to process vote: " + e.getLocalizedMessage());
 					}
 				}
 
 				forwardVote(vote);
 				callEvent(vote);
 
-				writer.close();
-				in.close();
+				closeQuietly(writer);
+				closeQuietly(in);
 				socket.close();
 
 			} catch (MalformedJsonException ex) {
 				// Throttle + rate-limited warn
-				ThrottleConfig cfg2 = getThrottleConfig();
-				boolean tunnelMode = cfg2 != null && cfg2.enabled && cfg2.tunnelRemoteIps.contains(remoteIp);
-				String throttleKey = "tunnel:" + remoteIp;
-
+				if (throttleKey == null) {
+					throttleKey = "tunnel:" + remoteIp;
+				}
+				if (cachedThrottleConfig != null && cachedThrottleConfig.enabled) {
+					tunnelMode = cachedThrottleConfig.tunnelRemoteIps.contains(remoteIp);
+				}
 				if (throttle != null)
 					throttle.fail(throttleKey, tunnelMode, false);
+
 				String toLog = warnLimiter.allow("malformedjson|" + throttleKey,
 						"Invalid vote format: Malformed JSON payload from " + remoteIp + " - " + ex.getMessage());
 				if (toLog != null)
 					logWarning(toLog);
-				debug(ex);
+
+				// Do NOT call debug(ex) here (it often prints stack traces -> spam).
 
 			} catch (SocketException ex) {
 				if (running) {
@@ -810,45 +794,59 @@ public abstract class VoteReceiver extends Thread {
 							"Connection error: Protocol error from " + remoteIp + " - " + ex.getLocalizedMessage());
 					if (toLog != null)
 						logWarning(toLog);
-					debug(ex);
 				} else {
 					logWarning("Votifier socket closed.");
 				}
 
 			} catch (BadPaddingException ex) {
-				// Keep this very quiet; the hot path already logs throttled warnings
-				debug(ex);
+				// Do nothing: the V1 decrypt path already logged a throttled warning.
+				// Avoid stack trace spam.
 
 			} catch (SocketTimeoutException ex) {
-				// Typically port-probe noise; keep WARN throttled
 				String toLog = warnLimiter.allow("timeout|" + remoteIp,
 						"Connection timeout while waiting for vote payload from " + remoteIp + " - " + ex.getMessage());
 				if (toLog != null)
 					logWarning(toLog);
-				debug(ex);
 
 			} catch (Exception ex) {
 				String errorMsg = ex.getMessage();
-				if (errorMsg != null && (errorMsg.startsWith("Invalid vote format:")
-						|| errorMsg.startsWith("Authentication failed:"))) {
-					// Throttle these too
-					ThrottleConfig cfg2 = getThrottleConfig();
-					boolean tunnelMode = cfg2 != null && cfg2.enabled && cfg2.tunnelRemoteIps.contains(remoteIp);
-					String throttleKey = "tunnel:" + remoteIp;
+
+				// Validation/auth errors are common scanner noise: throttle + rate-limit WARN.
+				if (errorMsg != null && (errorMsg.startsWith("Invalid vote format:") || errorMsg.startsWith("Authentication failed:"))) {
+					if (throttleKey == null) {
+						throttleKey = "tunnel:" + remoteIp;
+					}
+					if (cachedThrottleConfig != null && cachedThrottleConfig.enabled) {
+						tunnelMode = cachedThrottleConfig.tunnelRemoteIps.contains(remoteIp);
+					}
 					if (throttle != null)
 						throttle.fail(throttleKey, tunnelMode, false);
 
-					String toLog = warnLimiter.allow("validation|" + throttleKey, errorMsg);
+					String toLog = warnLimiter.allow("validation|" + throttleKey, errorMsg + " (from " + remoteIp + ")");
 					if (toLog != null)
 						logWarning(toLog);
 				} else {
 					String toLog = warnLimiter.allow("generic|" + remoteIp,
-							"Error processing vote from " + remoteIp + ": " + ex.getLocalizedMessage());
+							"Error processing vote from " + remoteIp + ": " + (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
+									: ex.getLocalizedMessage()));
 					if (toLog != null)
 						logWarning(toLog);
 				}
-				debug(ex);
+
+				// Avoid debug(ex) here too; concrete implementations often print stack traces.
+
 			}
+		}
+	}
+
+	private static void closeQuietly(Object o) {
+		try {
+			if (o instanceof BufferedWriter) {
+				((BufferedWriter) o).close();
+			} else if (o instanceof PushbackInputStream) {
+				((PushbackInputStream) o).close();
+			}
+		} catch (Exception ignored) {
 		}
 	}
 
@@ -865,8 +863,7 @@ public abstract class VoteReceiver extends Thread {
 
 			try (Socket s = new Socket()) {
 				s.connect(new InetSocketAddress(fs.getHost(), fs.getPort()), 1000);
-				BufferedReader in = new BufferedReader(
-						new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
+				BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
 				OutputStream outStream = s.getOutputStream();
 
 				// --- Handshake: read server greeting (v2) ---
@@ -878,8 +875,7 @@ public abstract class VoteReceiver extends Thread {
 					// Extract challenge
 					String[] parts = serverGreeting.split(" ");
 					if (parts.length < 3 || !"VOTIFIER".equals(parts[0]) || !"2".equals(parts[1])) {
-						throw new IllegalStateException(
-								"Invalid token-mode handshake from " + name + ": " + serverGreeting);
+						throw new IllegalStateException("Invalid token-mode handshake from " + name + ": " + serverGreeting);
 					}
 					String chal = parts[2];
 
@@ -895,8 +891,7 @@ public abstract class VoteReceiver extends Thread {
 					// Compute HMAC signature
 					Mac mac = Mac.getInstance("HmacSHA256");
 					mac.init(fs.getToken());
-					String sig = Base64.getEncoder()
-							.encodeToString(mac.doFinal(innerStr.getBytes(StandardCharsets.UTF_8)));
+					String sig = Base64.getEncoder().encodeToString(mac.doFinal(innerStr.getBytes(StandardCharsets.UTF_8)));
 
 					// Outer JSON with CRLF
 					JsonObject outer = new JsonObject();
@@ -907,8 +902,7 @@ public abstract class VoteReceiver extends Thread {
 
 				} else {
 					// Legacy V1 RSA-encrypted block
-					String vs = String.join("\n", "VOTE", vote.getServiceName(), vote.getUsername(), vote.getAddress(),
-							vote.getTimeStamp(), "") + "\n";
+					String vs = String.join("\n", "VOTE", vote.getServiceName(), vote.getUsername(), vote.getAddress(), vote.getTimeStamp(), "") + "\n";
 					payload = encrypt(vs.getBytes(StandardCharsets.UTF_8), getPublicKey(fs));
 				}
 
@@ -919,17 +913,9 @@ public abstract class VoteReceiver extends Thread {
 
 			} catch (Exception e) {
 				log("Failed to forward vote to " + name + ": " + e.getClass().getSimpleName() + " – " + e.getMessage());
-				debug(e);
+				// Do not call debug(e) here; forwarding failures can also be spammy.
 			}
 		}
-	}
-
-	private static String extractIp(String remote) {
-		if (remote == null)
-			return "unknown";
-		String s = remote.startsWith("/") ? remote.substring(1) : remote;
-		int colon = s.lastIndexOf(':');
-		return colon > 0 ? s.substring(0, colon) : s;
 	}
 
 	private String readString(byte[] data, int offset) {
