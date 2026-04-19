@@ -35,6 +35,7 @@ public class VoteForwarder {
 
 			try (Socket socket = new Socket()) {
 				socket.connect(new InetSocketAddress(server.getHost(), server.getPort()), 1000);
+				socket.setSoTimeout(3000);
 
 				BufferedReader in = new BufferedReader(
 						new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));

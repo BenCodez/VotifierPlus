@@ -1,7 +1,68 @@
+/*
+ * Copyright (C) 2012 Vex Software LLC
+ * This file is part of Votifier.
+ *
+ * Votifier is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Votifier is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Votifier. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * ----------------------------------------------------------------------
+ * Modifications by: BenCodez
+ *
+ * Summary of changes:
+ * - Refactored original monolithic VoteReceiver into multiple classes:
+ *     - VoteConnectionHandler (connection handling + lifecycle)
+ *     - VoteParser (V1/V2 protocol parsing)
+ *     - ProxyHeaderProcessor (PROXY/CONNECT support)
+ *     - VoteThrottleService (rate limiting + abuse protection)
+ *     - VoteForwarder (vote forwarding logic)
+ *
+ * - Added support for:
+ *     - Votifier V2 token-based protocol (JSON + HMAC validation)
+ *     - PROXY protocol (v1) and HTTP CONNECT tunneling
+ *     - Real IP detection for improved per-client throttling
+ *
+ * - Reworked connection handling:
+ *     - Handler now returns Vote instead of performing side effects
+ *     - VoteReceiver is responsible for forwarding + event dispatch
+ *     - Added thread pool for concurrent connection handling
+ *
+ * - Improved performance and stability:
+ *     - Asynchronous forwarding to prevent blocking vote processing
+ *     - Socket timeouts and safer stream handling
+ *
+ * - Replaced string-based error handling with typed exceptions:
+ *     - InvalidVoteException
+ *     - VoteAuthenticationException
+ *
+ * - Enhanced validation:
+ *     - Strict JSON parsing and required field enforcement
+ *     - Non-empty field validation for V2 payloads
+ *     - Constant-time HMAC comparison for signatures
+ *
+ * - Updated throttling system:
+ *     - Separated from VoteReceiver into VoteThrottleService
+ *     - Added per-client and tunnel-aware throttling modes
+ *     - Log suppression to reduce spam from abusive sources
+ *
+ * - Updated unit tests to match new architecture and behavior
+ *
+ * ----------------------------------------------------------------------
+ */
 package com.vexsoftware.votifier.net;
 
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.SocketException;
 import java.security.Key;
 import java.security.KeyFactory;
@@ -11,6 +72,9 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 import javax.crypto.Cipher;
 
@@ -29,8 +93,14 @@ public abstract class VoteReceiver extends Thread {
 
 	private volatile boolean running = true;
 
+	@Getter
 	private volatile VoteThrottleService throttleService;
+
+	@Getter
 	private volatile VoteForwarder voteForwarder;
+
+	private volatile ExecutorService connectionExecutor;
+	private volatile ExecutorService forwardExecutor;
 
 	public VoteReceiver(String host, int port) throws Exception {
 		super("Votifier I/O");
@@ -55,14 +125,21 @@ public abstract class VoteReceiver extends Thread {
 
 	public void shutdown() {
 		running = false;
-		if (server == null) {
-			return;
+
+		if (server != null) {
+			try {
+				server.close();
+			} catch (Exception ex) {
+				logWarning("Unable to shut down vote receiver cleanly.");
+			}
 		}
 
-		try {
-			server.close();
-		} catch (Exception ex) {
-			logWarning("Unable to shut down vote receiver cleanly.");
+		if (connectionExecutor != null) {
+			connectionExecutor.shutdownNow();
+		}
+
+		if (forwardExecutor != null) {
+			forwardExecutor.shutdownNow();
 		}
 	}
 
@@ -71,18 +148,71 @@ public abstract class VoteReceiver extends Thread {
 		throttleService = new VoteThrottleService(getThrottleConfig());
 		voteForwarder = new VoteForwarder(this);
 
+		connectionExecutor = Executors.newFixedThreadPool(4, new ThreadFactory() {
+			private int id = 1;
+
+			@Override
+			public Thread newThread(Runnable r) {
+				Thread thread = new Thread(r, "Votifier-Connection-" + id++);
+				thread.setDaemon(true);
+				return thread;
+			}
+		});
+
+		forwardExecutor = Executors.newSingleThreadExecutor(new ThreadFactory() {
+			@Override
+			public Thread newThread(Runnable r) {
+				Thread thread = new Thread(r, "Votifier-Forwarder");
+				thread.setDaemon(true);
+				return thread;
+			}
+		});
+
+		final VoteConnectionHandler handler = new VoteConnectionHandler(this, throttleService);
+
 		while (running) {
 			try {
-				VoteConnectionHandler handler = new VoteConnectionHandler(this, throttleService, voteForwarder);
-				handler.handle(server.accept());
+				final Socket socket = server.accept();
+
+				connectionExecutor.submit(new Runnable() {
+					@Override
+					public void run() {
+						try {
+							Vote vote = handler.handle(socket);
+							if (vote != null) {
+								callEvent(vote);
+
+								final Vote forwardVote = vote;
+								forwardExecutor.submit(new Runnable() {
+									@Override
+									public void run() {
+										try {
+											voteForwarder.forwardVote(forwardVote);
+										} catch (Exception ex) {
+											logWarning("Error forwarding vote: "
+													+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
+															: ex.getLocalizedMessage()));
+										}
+									}
+								});
+							}
+						} catch (Exception ex) {
+							logWarning("Error processing vote connection: "
+									+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
+											: ex.getLocalizedMessage()));
+						}
+					}
+				});
 			} catch (SocketException ex) {
 				if (running) {
-					throttleService.logSocketError("unknown", ex);
+					logWarning("Connection error while accepting vote socket: " + ex.getLocalizedMessage());
 				} else {
 					logWarning("Votifier socket closed.");
 				}
 			} catch (Exception ex) {
-				throttleService.logGenericError("unknown", ex);
+				logWarning("Error accepting vote connection: "
+						+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
+								: ex.getLocalizedMessage()));
 			}
 		}
 	}

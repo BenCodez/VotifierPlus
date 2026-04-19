@@ -13,23 +13,30 @@ import com.google.gson.JsonObject;
 import com.google.gson.stream.MalformedJsonException;
 import com.vexsoftware.votifier.model.Vote;
 
+/**
+ * Handles a single accepted vote connection.
+ */
 public class VoteConnectionHandler {
 
 	private final VoteReceiver receiver;
 	private final VoteThrottleService throttleService;
-	private final VoteForwarder forwarder;
 	private final ProxyHeaderProcessor proxyHeaderProcessor;
 	private final VoteParser voteParser;
 
-	public VoteConnectionHandler(VoteReceiver receiver, VoteThrottleService throttleService, VoteForwarder forwarder) {
+	public VoteConnectionHandler(VoteReceiver receiver, VoteThrottleService throttleService) {
 		this.receiver = receiver;
 		this.throttleService = throttleService;
-		this.forwarder = forwarder;
 		this.proxyHeaderProcessor = new ProxyHeaderProcessor();
 		this.voteParser = new VoteParser();
 	}
 
-	public void handle(Socket socket) {
+	/**
+	 * Handles a single socket connection.
+	 *
+	 * @param socket the accepted socket
+	 * @return the parsed vote, or null if the connection should be ignored/dropped
+	 */
+	public Vote handle(Socket socket) {
 		String remoteIp = "unknown";
 		String address = "";
 		String throttleKey = null;
@@ -65,7 +72,7 @@ public class VoteConnectionHandler {
 				throttleService.logWarning(receiver, "throttle|" + throttleKey,
 						"Votifier throttling " + throttleKey + " (tunnel=" + tunnelMode + "), retry in "
 								+ Math.max(0, retry / 1000) + "s");
-				return;
+				return null;
 			}
 
 			waitForPayload(in, address);
@@ -78,7 +85,7 @@ public class VoteConnectionHandler {
 				throttleService.logWarning(receiver, "shortv1|" + throttleKey,
 						"Invalid vote format: Insufficient data for V1 vote block from "
 								+ (realIpKnown ? realIp : remoteIp) + " (expected 256 bytes)");
-				return;
+				return null;
 			}
 
 			VoteRequest request = voteParser.parse(in, version, receiver, address, challenge);
@@ -101,8 +108,23 @@ public class VoteConnectionHandler {
 				sendOkResponse(writer);
 			}
 
-			forwarder.forwardVote(vote);
-			receiver.callEvent(vote);
+			return vote;
+		} catch (InvalidVoteException ex) {
+			if (throttleKey == null) {
+				throttleKey = "tunnel:" + remoteIp;
+			}
+
+			throttleService.fail(throttleKey, tunnelMode, realIpKnown);
+			throttleService.logWarning(receiver, "invalid|" + throttleKey,
+					"Invalid vote format from " + remoteIp + ": " + ex.getMessage());
+		} catch (VoteAuthenticationException ex) {
+			if (throttleKey == null) {
+				throttleKey = "tunnel:" + remoteIp;
+			}
+
+			throttleService.fail(throttleKey, tunnelMode, realIpKnown);
+			throttleService.logWarning(receiver, "auth|" + throttleKey,
+					"Authentication failed from " + remoteIp + ": " + ex.getMessage());
 		} catch (MalformedJsonException ex) {
 			if (throttleKey == null) {
 				throttleKey = "tunnel:" + remoteIp;
@@ -126,22 +148,13 @@ public class VoteConnectionHandler {
 			throttleService.logWarning(receiver, "socket|" + remoteIp,
 					"Connection error: Protocol error from " + remoteIp + " - " + ex.getLocalizedMessage());
 		} catch (Exception ex) {
-			String message = ex.getMessage();
-			if (message != null && (message.startsWith("Invalid vote format:")
-					|| message.startsWith("Authentication failed:"))) {
-				if (throttleKey == null) {
-					throttleKey = "tunnel:" + remoteIp;
-				}
-
-				throttleService.fail(throttleKey, tunnelMode, false);
-				throttleService.logWarning(receiver, "validation|" + throttleKey, message + " (from " + remoteIp + ")");
-			} else {
-				throttleService.logWarning(receiver, "generic|" + remoteIp,
-						"Error processing vote from " + remoteIp + ": "
-								+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
-										: ex.getLocalizedMessage()));
-			}
+			throttleService.logWarning(receiver, "generic|" + remoteIp,
+					"Error processing vote from " + remoteIp + ": "
+							+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
+									: ex.getLocalizedMessage()));
 		}
+
+		return null;
 	}
 
 	private void sendHandshakeIfNeeded(PushbackInputStream in, BufferedWriter writer, String challenge) throws Exception {

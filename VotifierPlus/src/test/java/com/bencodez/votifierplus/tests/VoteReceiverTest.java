@@ -33,14 +33,16 @@ import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.ProxyHeaderProcessor;
 import com.vexsoftware.votifier.net.ThrottleConfig;
+import com.vexsoftware.votifier.net.VoteAuthenticationException;
+import com.vexsoftware.votifier.net.InvalidVoteException;
 import com.vexsoftware.votifier.net.VoteParser;
 import com.vexsoftware.votifier.net.VoteProtocolVersion;
 import com.vexsoftware.votifier.net.VoteReceiver;
 import com.vexsoftware.votifier.net.VoteRequest;
 
 /**
- * Unit tests for V1/V2 parsing and proxy header processing after the
- * VoteReceiver split into separate helper classes.
+ * Unit tests for parser and proxy handling after splitting VoteReceiver into
+ * separate classes.
  */
 public class VoteReceiverTest {
 
@@ -269,11 +271,10 @@ public class VoteReceiverTest {
 		PushbackInputStream in = new PushbackInputStream(
 				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 
-		Exception exception = assertThrows(Exception.class,
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
 				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
 
-		assertTrue(exception.getMessage().contains("Missing required fields in outer JSON"),
-				"Expected error message about missing payload field, got: " + exception.getMessage());
+		assertTrue(exception.getMessage().contains("Missing required fields in outer JSON"));
 	}
 
 	@Test
@@ -284,11 +285,10 @@ public class VoteReceiverTest {
 		PushbackInputStream in = new PushbackInputStream(
 				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 
-		Exception exception = assertThrows(Exception.class,
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
 				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
 
-		assertTrue(exception.getMessage().contains("Missing required fields in outer JSON"),
-				"Expected error message about missing signature field, got: " + exception.getMessage());
+		assertTrue(exception.getMessage().contains("Missing required fields in outer JSON"));
 	}
 
 	@Test
@@ -312,11 +312,10 @@ public class VoteReceiverTest {
 		PushbackInputStream in = new PushbackInputStream(
 				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 
-		Exception exception = assertThrows(Exception.class,
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
 				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
 
-		assertTrue(exception.getMessage().contains("Missing required fields in inner JSON"),
-				"Expected error message about missing username field, got: " + exception.getMessage());
+		assertTrue(exception.getMessage().contains("Missing required fields in inner JSON"));
 	}
 
 	@Test
@@ -341,11 +340,10 @@ public class VoteReceiverTest {
 		PushbackInputStream in = new PushbackInputStream(
 				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 
-		Exception exception = assertThrows(Exception.class,
+		VoteAuthenticationException exception = assertThrows(VoteAuthenticationException.class,
 				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
 
-		assertTrue(exception.getMessage().contains("Invalid challenge"),
-				"Expected error message about invalid challenge, got: " + exception.getMessage());
+		assertTrue(exception.getMessage().contains("Invalid challenge"));
 	}
 
 	@Test
@@ -365,11 +363,38 @@ public class VoteReceiverTest {
 		PushbackInputStream in = new PushbackInputStream(
 				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 
-		Exception exception = assertThrows(Exception.class,
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
 				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
 
-		assertTrue(exception.getMessage().contains("Signature is not valid Base64"),
-				"Expected error message about invalid base64, got: " + exception.getMessage());
+		assertTrue(exception.getMessage().contains("Signature is not valid Base64"));
+	}
+
+	@Test
+	public void testV2VoteEmptyUsernameField() throws Exception {
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", "   ");
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestamp");
+		inner.addProperty("challenge", "testChallenge");
+		String payload = inner.toString();
+
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+		String signature = Base64.getEncoder().encodeToString(signatureBytes);
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
+
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
+				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
+
+		assertTrue(exception.getMessage().contains("empty field 'username'"));
 	}
 
 	@Test

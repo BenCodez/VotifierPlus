@@ -16,11 +16,30 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.vexsoftware.votifier.crypto.RSA;
 
+/**
+ * Parses incoming vote payloads.
+ */
 public class VoteParser {
 
 	private static final Gson GSON = new Gson();
 	private static final short PROTOCOL_2_MAGIC = (short) 0x733A;
 
+	private static final String FIELD_PAYLOAD = "payload";
+	private static final String FIELD_SIGNATURE = "signature";
+	private static final String FIELD_SERVICE_NAME = "serviceName";
+	private static final String FIELD_USERNAME = "username";
+	private static final String FIELD_ADDRESS = "address";
+	private static final String FIELD_TIMESTAMP = "timestamp";
+	private static final String FIELD_CHALLENGE = "challenge";
+	private static final String OPCODE_VOTE = "VOTE";
+
+	/**
+	 * Detects the vote protocol version from the first bytes of the stream.
+	 *
+	 * @param in the stream
+	 * @return the detected protocol version
+	 * @throws Exception if there is not enough data to determine the protocol
+	 */
 	public VoteProtocolVersion detectVersion(PushbackInputStream in) throws Exception {
 		byte[] header = new byte[2];
 		int bytesRead = in.read(header);
@@ -43,6 +62,17 @@ public class VoteParser {
 		return VoteProtocolVersion.V1;
 	}
 
+	/**
+	 * Parses the vote payload based on the detected protocol version.
+	 *
+	 * @param in the input stream
+	 * @param version the detected protocol version
+	 * @param receiver the vote receiver
+	 * @param address remote address string for logging/errors
+	 * @param challenge expected challenge for V2
+	 * @return parsed vote request data
+	 * @throws Exception on parse/validation/authentication errors
+	 */
 	public VoteRequest parse(PushbackInputStream in, VoteProtocolVersion version, VoteReceiver receiver, String address,
 			String challenge) throws Exception {
 		if (version == VoteProtocolVersion.V1) {
@@ -64,9 +94,9 @@ public class VoteParser {
 		}
 
 		if (totalRead != 256) {
-			throw new Exception(
-					"Invalid vote format: Failed to read complete V1 vote block from " + address + " (expected 256 bytes, got "
-							+ totalRead + ")");
+			throw new InvalidVoteException(
+					"Failed to read complete V1 vote block from " + address + " (expected 256 bytes, got " + totalRead
+							+ ")");
 		}
 
 		byte[] decrypted;
@@ -80,8 +110,9 @@ public class VoteParser {
 
 		String opcode = readString(decrypted, position);
 		position += opcode.length() + 1;
-		if (!"VOTE".equals(opcode)) {
-			throw new Exception("Invalid vote format: Expected opcode 'VOTE' but got '" + opcode + "' from " + address);
+		if (!OPCODE_VOTE.equals(opcode)) {
+			throw new InvalidVoteException(
+					"Expected opcode '" + OPCODE_VOTE + "' but got '" + opcode + "' from " + address);
 		}
 
 		VoteRequest request = new VoteRequest();
@@ -127,7 +158,7 @@ public class VoteParser {
 		int jsonStart = voteData.indexOf('{');
 		int jsonEnd = voteData.lastIndexOf('}');
 		if (jsonStart == -1 || jsonEnd == -1 || jsonStart > jsonEnd) {
-			throw new Exception("Invalid vote format: Expected JSON-formatted vote payload from " + address);
+			throw new InvalidVoteException("Expected JSON-formatted vote payload from " + address);
 		}
 
 		String jsonPayloadRaw = voteData.substring(jsonStart, jsonEnd + 1).trim();
@@ -137,49 +168,54 @@ public class VoteParser {
 		if (jsonPayloadRaw.startsWith("[")) {
 			JsonArray jsonArray = GSON.fromJson(jsonPayloadRaw, JsonArray.class);
 			if (jsonArray.size() == 0) {
-				throw new Exception("Invalid vote format: Empty JSON array in vote payload from " + address);
+				throw new InvalidVoteException("Empty JSON array in vote payload from " + address);
 			}
 			voteMessage = jsonArray.get(0).getAsJsonObject();
 		} else {
 			voteMessage = GSON.fromJson(jsonPayloadRaw, JsonObject.class);
 		}
 
-		if (!voteMessage.has("payload") || !voteMessage.has("signature")) {
-			throw new Exception("Invalid vote format: Missing required fields in outer JSON from " + address);
+		if (!voteMessage.has(FIELD_PAYLOAD) || !voteMessage.has(FIELD_SIGNATURE)) {
+			throw new InvalidVoteException("Missing required fields in outer JSON from " + address);
 		}
 
-		String payload = voteMessage.get("payload").getAsString();
-		String signature = voteMessage.get("signature").getAsString();
+		String payload = requireString(voteMessage, FIELD_PAYLOAD, "Outer JSON from " + address + ": ");
+		String signature = requireString(voteMessage, FIELD_SIGNATURE, "Outer JSON from " + address + ": ");
 
 		byte[] providedSig;
 		try {
 			providedSig = Base64.getDecoder().decode(signature);
 		} catch (IllegalArgumentException ex) {
-			throw new Exception(
-					"Invalid vote format: Signature is not valid Base64 from " + address + ": " + ex.getMessage());
+			throw new InvalidVoteException(
+					"Signature is not valid Base64 from " + address + ": " + ex.getMessage(), ex);
 		}
 
 		JsonObject votePayload;
 		try {
 			votePayload = GSON.fromJson(payload, JsonObject.class);
 		} catch (Exception ex) {
-			throw new Exception(
-					"Invalid vote format: Inner payload is not valid JSON from " + address + ": " + ex.getMessage());
+			throw new InvalidVoteException("Inner payload is not valid JSON from " + address + ": " + ex.getMessage(),
+					ex);
 		}
 
-		if (!votePayload.has("serviceName") || !votePayload.has("username") || !votePayload.has("address")
-				|| !votePayload.has("timestamp") || !votePayload.has("challenge")) {
-			throw new Exception("Invalid vote format: Missing required fields in inner JSON from " + address);
+		if (!votePayload.has(FIELD_SERVICE_NAME) || !votePayload.has(FIELD_USERNAME) || !votePayload.has(FIELD_ADDRESS)
+				|| !votePayload.has(FIELD_TIMESTAMP) || !votePayload.has(FIELD_CHALLENGE)) {
+			throw new InvalidVoteException("Missing required fields in inner JSON from " + address);
 		}
 
-		String serviceName = votePayload.get("serviceName").getAsString();
+		String serviceName = requireString(votePayload, FIELD_SERVICE_NAME, "Inner JSON from " + address + ": ");
+		String username = requireString(votePayload, FIELD_USERNAME, "Inner JSON from " + address + ": ");
+		String voteAddress = requireString(votePayload, FIELD_ADDRESS, "Inner JSON from " + address + ": ");
+		String timeStamp = requireString(votePayload, FIELD_TIMESTAMP, "Inner JSON from " + address + ": ");
+		String receivedChallenge = requireString(votePayload, FIELD_CHALLENGE,
+				"Inner JSON from " + address + ": ");
 
 		Map<String, Key> tokens = receiver.getTokens();
 		Key key = tokens.get(serviceName);
 		if (key == null) {
 			key = tokens.get("default");
 			if (key == null) {
-				throw new Exception("Authentication failed: Unknown token for service '" + serviceName + "' from " + address);
+				throw new VoteAuthenticationException("Unknown token for service '" + serviceName + "' from " + address);
 			}
 			receiver.debug("Using default token for service: " + serviceName);
 		} else {
@@ -187,22 +223,39 @@ public class VoteParser {
 		}
 
 		if (!hmacEqual(providedSig, payload.getBytes(StandardCharsets.UTF_8), key)) {
-			throw new Exception(
-					"Authentication failed: Signature verification failed (invalid token?) for service '" + serviceName
-							+ "' from " + address);
+			throw new VoteAuthenticationException(
+					"Signature verification failed (invalid token?) for service '" + serviceName + "' from " + address);
 		}
 
-		String receivedChallenge = votePayload.get("challenge").getAsString().trim();
 		if (!receivedChallenge.equals(challenge.trim())) {
-			throw new Exception("Authentication failed: Invalid challenge from " + address);
+			throw new VoteAuthenticationException("Invalid challenge from " + address);
 		}
 
 		VoteRequest request = new VoteRequest();
 		request.setServiceName(serviceName);
-		request.setUsername(votePayload.get("username").getAsString());
-		request.setAddress(votePayload.get("address").getAsString());
-		request.setTimeStamp(votePayload.get("timestamp").getAsString());
+		request.setUsername(username);
+		request.setAddress(voteAddress);
+		request.setTimeStamp(timeStamp);
 		return request;
+	}
+
+	private String requireString(JsonObject obj, String field, String errorPrefix) throws InvalidVoteException {
+		if (!obj.has(field)) {
+			throw new InvalidVoteException(errorPrefix + "missing field '" + field + "'");
+		}
+
+		String value;
+		try {
+			value = obj.get(field).getAsString();
+		} catch (Exception ex) {
+			throw new InvalidVoteException(errorPrefix + "invalid field '" + field + "'", ex);
+		}
+
+		if (value == null || value.trim().isEmpty()) {
+			throw new InvalidVoteException(errorPrefix + "empty field '" + field + "'");
+		}
+
+		return value;
 	}
 
 	private String readString(byte[] data, int offset) {
