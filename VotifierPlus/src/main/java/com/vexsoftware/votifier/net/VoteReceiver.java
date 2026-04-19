@@ -75,6 +75,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Cipher;
 
@@ -134,13 +135,35 @@ public abstract class VoteReceiver extends Thread {
 			}
 		}
 
-		if (connectionExecutor != null) {
-			connectionExecutor.shutdownNow();
+		shutdownExecutor(connectionExecutor, "connection");
+		shutdownExecutor(forwardExecutor, "forward");
+	}
+	
+	private void shutdownExecutor(ExecutorService executor, String name) {
+		if (executor == null) {
+			return;
 		}
 
-		if (forwardExecutor != null) {
-			forwardExecutor.shutdownNow();
+		executor.shutdown();
+		try {
+			if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
+				executor.shutdownNow();
+				if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
+					logWarning("Unable to fully shut down " + name + " executor.");
+				}
+			}
+		} catch (InterruptedException ex) {
+			executor.shutdownNow();
+			Thread.currentThread().interrupt();
 		}
+	}
+
+	public int getConnectionWorkerCount() {
+		return 4;
+	}
+
+	public int getForwardWorkerCount() {
+		return 1;
 	}
 
 	@Override
@@ -148,7 +171,7 @@ public abstract class VoteReceiver extends Thread {
 		throttleService = new VoteThrottleService(getThrottleConfig());
 		voteForwarder = new VoteForwarder(this);
 
-		connectionExecutor = Executors.newFixedThreadPool(4, new ThreadFactory() {
+		connectionExecutor = Executors.newFixedThreadPool(getConnectionWorkerCount(), new ThreadFactory() {
 			private int id = 1;
 
 			@Override
@@ -159,7 +182,7 @@ public abstract class VoteReceiver extends Thread {
 			}
 		});
 
-		forwardExecutor = Executors.newSingleThreadExecutor(new ThreadFactory() {
+		forwardExecutor = Executors.newFixedThreadPool(getForwardWorkerCount(), new ThreadFactory() {
 			@Override
 			public Thread newThread(Runnable r) {
 				Thread thread = new Thread(r, "Votifier-Forwarder");

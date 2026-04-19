@@ -63,11 +63,11 @@ public class VoteConnectionHandler {
 			String challenge = receiver.getChallenge();
 			sendHandshakeIfNeeded(in, writer, challenge);
 
+			waitForPayload(in, address);
+
 			String realIp = null;
-			if (in.available() > 0) {
-				ProxyHeaderProcessor.ProxyHeaderResult proxyResult = proxyHeaderProcessor.process(in, writer, receiver);
-				realIp = proxyResult.getRealIp();
-			}
+			ProxyHeaderProcessor.ProxyHeaderResult proxyResult = proxyHeaderProcessor.process(in, writer, receiver);
+			realIp = proxyResult.getRealIp();
 
 			realIpKnown = realIp != null && !realIp.isEmpty();
 			tunnelMode = throttleService.isTunnelMode(remoteIp);
@@ -75,13 +75,10 @@ public class VoteConnectionHandler {
 
 			if (throttleService.isBlocked(throttleKey)) {
 				long retry = throttleService.retryAfterMs(throttleKey);
-				throttleService.logWarning(receiver, "throttle|" + throttleKey,
-						"Votifier throttling " + throttleKey + " (tunnel=" + tunnelMode + "), retry in "
-								+ Math.max(0, retry / 1000) + "s");
+				throttleService.logWarning(receiver, "throttle|" + throttleKey, "Votifier throttling " + throttleKey
+						+ " (tunnel=" + tunnelMode + "), retry in " + Math.max(0, retry / 1000) + "s");
 				return null;
 			}
-
-			waitForPayload(in, address);
 
 			VoteProtocolVersion version = voteParser.detectVersion(in);
 			receiver.debug("Detected vote protocol version: " + version);
@@ -154,16 +151,15 @@ public class VoteConnectionHandler {
 			throttleService.logWarning(receiver, "socket|" + remoteIp,
 					"Connection error: Protocol error from " + remoteIp + " - " + ex.getLocalizedMessage());
 		} catch (Exception ex) {
-			throttleService.logWarning(receiver, "generic|" + remoteIp,
-					"Error processing vote from " + remoteIp + ": "
-							+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
-									: ex.getLocalizedMessage()));
+			throttleService.logWarning(receiver, "generic|" + remoteIp, "Error processing vote from " + remoteIp + ": "
+					+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName() : ex.getLocalizedMessage()));
 		}
 
 		return null;
 	}
 
-	private void sendHandshakeIfNeeded(PushbackInputStream in, BufferedWriter writer, String challenge) throws Exception {
+	private void sendHandshakeIfNeeded(PushbackInputStream in, BufferedWriter writer, String challenge)
+			throws Exception {
 		String message = receiver.isUseTokens() ? "VOTIFIER 2" : "VOTIFIER 1";
 		if (receiver.isUseTokens()) {
 			message += " " + challenge;
@@ -209,7 +205,8 @@ public class VoteConnectionHandler {
 			writer.flush();
 			receiver.debug("Sent OK response: " + okMessage);
 		} catch (Exception ex) {
-			receiver.debug("Failed to send OK response, but will continue to process vote: " + ex.getLocalizedMessage());
+			receiver.debug(
+					"Failed to send OK response, but will continue to process vote: " + ex.getLocalizedMessage());
 		}
 	}
 }

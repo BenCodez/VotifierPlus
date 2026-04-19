@@ -1,9 +1,3 @@
-/*
- * Derived from original Votifier VoteReceiver (GPLv3).
- * Refactored into a dedicated component by BenCodez.
- *
- * See VoteReceiver for full modification summary.
- */
 package com.vexsoftware.votifier.net;
 
 import java.io.BufferedReader;
@@ -21,6 +15,17 @@ import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.model.Vote;
 
 public class VoteForwarder {
+
+	private static final String HANDSHAKE_PREFIX = "VOTIFIER";
+	private static final String HANDSHAKE_V2 = "2";
+	private static final String OPCODE_VOTE = "VOTE";
+	private static final String FIELD_PAYLOAD = "payload";
+	private static final String FIELD_SIGNATURE = "signature";
+	private static final String FIELD_SERVICE_NAME = "serviceName";
+	private static final String FIELD_USERNAME = "username";
+	private static final String FIELD_ADDRESS = "address";
+	private static final String FIELD_TIMESTAMP = "timestamp";
+	private static final String FIELD_CHALLENGE = "challenge";
 
 	private final VoteReceiver receiver;
 
@@ -53,18 +58,18 @@ public class VoteForwarder {
 				byte[] payload;
 				if (server.isUseTokens()) {
 					String[] parts = greeting.split(" ");
-					if (parts.length < 3 || !"VOTIFIER".equals(parts[0]) || !"2".equals(parts[1])) {
+					if (parts.length < 3 || !HANDSHAKE_PREFIX.equals(parts[0]) || !HANDSHAKE_V2.equals(parts[1])) {
 						throw new IllegalStateException("Invalid token-mode handshake from " + name + ": " + greeting);
 					}
 
 					String challenge = parts[2];
 
 					JsonObject inner = new JsonObject();
-					inner.addProperty("serviceName", vote.getServiceName());
-					inner.addProperty("username", vote.getUsername());
-					inner.addProperty("address", vote.getAddress());
-					inner.addProperty("timestamp", vote.getTimeStamp());
-					inner.addProperty("challenge", challenge);
+					inner.addProperty(FIELD_SERVICE_NAME, vote.getServiceName());
+					inner.addProperty(FIELD_USERNAME, vote.getUsername());
+					inner.addProperty(FIELD_ADDRESS, vote.getAddress());
+					inner.addProperty(FIELD_TIMESTAMP, vote.getTimeStamp());
+					inner.addProperty(FIELD_CHALLENGE, challenge);
 
 					String innerJson = inner.toString();
 
@@ -74,12 +79,12 @@ public class VoteForwarder {
 							.encodeToString(mac.doFinal(innerJson.getBytes(StandardCharsets.UTF_8)));
 
 					JsonObject outer = new JsonObject();
-					outer.addProperty("payload", innerJson);
-					outer.addProperty("signature", sig);
+					outer.addProperty(FIELD_PAYLOAD, innerJson);
+					outer.addProperty(FIELD_SIGNATURE, sig);
 
 					payload = (outer.toString() + "\r\n").getBytes(StandardCharsets.UTF_8);
 				} else {
-					String voteString = String.join("\n", "VOTE", vote.getServiceName(), vote.getUsername(),
+					String voteString = String.join("\n", OPCODE_VOTE, vote.getServiceName(), vote.getUsername(),
 							vote.getAddress(), vote.getTimeStamp(), "") + "\n";
 					payload = receiver.encrypt(voteString.getBytes(StandardCharsets.UTF_8), receiver.getPublicKey(server));
 				}
