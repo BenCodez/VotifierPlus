@@ -1,3 +1,9 @@
+/*
+ * Derived from original Votifier VoteReceiver (GPLv3).
+ * Refactored into a dedicated component by BenCodez.
+ *
+ * See VoteReceiver for full modification summary.
+ */
 package com.vexsoftware.votifier.net;
 
 import java.io.BufferedReader;

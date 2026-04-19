@@ -1,3 +1,9 @@
+/*
+ * Derived from original Votifier VoteReceiver (GPLv3).
+ * Refactored into a dedicated component by BenCodez.
+ *
+ * See VoteReceiver for full modification summary.
+ */
 package com.vexsoftware.votifier.net;
 
 import java.io.ByteArrayOutputStream;
@@ -19,7 +25,8 @@ public class ProxyHeaderProcessor {
 		private String realIp;
 	}
 
-	public ProxyHeaderResult process(PushbackInputStream in, BufferedWriter writer, VoteReceiver receiver) throws Exception {
+	public ProxyHeaderResult process(PushbackInputStream in, BufferedWriter writer, VoteReceiver receiver)
+			throws Exception {
 		ProxyHeaderResult result = new ProxyHeaderResult();
 
 		byte[] headerPeek = new byte[32];

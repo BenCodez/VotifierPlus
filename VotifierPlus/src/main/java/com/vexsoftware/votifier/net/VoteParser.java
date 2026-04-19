@@ -1,3 +1,9 @@
+/*
+ * Derived from original Votifier VoteReceiver (GPLv3).
+ * Refactored into a dedicated component by BenCodez.
+ *
+ * See VoteReceiver for full modification summary.
+ */
 package com.vexsoftware.votifier.net;
 
 import java.io.ByteArrayOutputStream;
@@ -65,10 +71,10 @@ public class VoteParser {
 	/**
 	 * Parses the vote payload based on the detected protocol version.
 	 *
-	 * @param in the input stream
-	 * @param version the detected protocol version
-	 * @param receiver the vote receiver
-	 * @param address remote address string for logging/errors
+	 * @param in        the input stream
+	 * @param version   the detected protocol version
+	 * @param receiver  the vote receiver
+	 * @param address   remote address string for logging/errors
 	 * @param challenge expected challenge for V2
 	 * @return parsed vote request data
 	 * @throws Exception on parse/validation/authentication errors
@@ -94,9 +100,8 @@ public class VoteParser {
 		}
 
 		if (totalRead != 256) {
-			throw new InvalidVoteException(
-					"Failed to read complete V1 vote block from " + address + " (expected 256 bytes, got " + totalRead
-							+ ")");
+			throw new InvalidVoteException("Failed to read complete V1 vote block from " + address
+					+ " (expected 256 bytes, got " + totalRead + ")");
 		}
 
 		byte[] decrypted;
@@ -186,8 +191,8 @@ public class VoteParser {
 		try {
 			providedSig = Base64.getDecoder().decode(signature);
 		} catch (IllegalArgumentException ex) {
-			throw new InvalidVoteException(
-					"Signature is not valid Base64 from " + address + ": " + ex.getMessage(), ex);
+			throw new InvalidVoteException("Signature is not valid Base64 from " + address + ": " + ex.getMessage(),
+					ex);
 		}
 
 		JsonObject votePayload;
@@ -207,15 +212,15 @@ public class VoteParser {
 		String username = requireString(votePayload, FIELD_USERNAME, "Inner JSON from " + address + ": ");
 		String voteAddress = requireString(votePayload, FIELD_ADDRESS, "Inner JSON from " + address + ": ");
 		String timeStamp = requireString(votePayload, FIELD_TIMESTAMP, "Inner JSON from " + address + ": ");
-		String receivedChallenge = requireString(votePayload, FIELD_CHALLENGE,
-				"Inner JSON from " + address + ": ");
+		String receivedChallenge = requireString(votePayload, FIELD_CHALLENGE, "Inner JSON from " + address + ": ");
 
 		Map<String, Key> tokens = receiver.getTokens();
 		Key key = tokens.get(serviceName);
 		if (key == null) {
 			key = tokens.get("default");
 			if (key == null) {
-				throw new VoteAuthenticationException("Unknown token for service '" + serviceName + "' from " + address);
+				throw new VoteAuthenticationException(
+						"Unknown token for service '" + serviceName + "' from " + address);
 			}
 			receiver.debug("Using default token for service: " + serviceName);
 		} else {
