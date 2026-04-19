@@ -10,7 +10,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyPair;
@@ -29,40 +28,42 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.vexsoftware.votifier.ForwardServer;
-import com.vexsoftware.votifier.crypto.RSA;
 import com.vexsoftware.votifier.model.Vote;
+import com.vexsoftware.votifier.net.ProxyHeaderProcessor;
+import com.vexsoftware.votifier.net.ThrottleConfig;
+import com.vexsoftware.votifier.net.VoteParser;
+import com.vexsoftware.votifier.net.VoteProtocolVersion;
 import com.vexsoftware.votifier.net.VoteReceiver;
+import com.vexsoftware.votifier.net.VoteRequest;
 
 /**
- * Unit tests for processing V1 (RSA) and V2 (token/JSON) vote payloads,
- * including verification of the challenge and proxy header processing.
+ * Unit tests for V1/V2 parsing and proxy header processing after the
+ * VoteReceiver split into separate helper classes.
  */
 public class VoteReceiverTest {
 
-	// Test RSA key pair for v1 tests.
 	private static KeyPair testKeyPair;
-	// Dummy token key for v2 tests.
 	private static Key dummyTokenKey;
 
-	// Our test receiver instance; will bind to an ephemeral port (0).
 	private TestVoteReceiver receiver;
+	private VoteParser parser;
+	private ProxyHeaderProcessor proxyHeaderProcessor;
 
 	@BeforeAll
 	public static void setupClass() throws Exception {
 		KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
 		kpg.initialize(2048);
 		testKeyPair = kpg.generateKeyPair();
-		// Create a dummy HMAC key (for example purposes)
 		dummyTokenKey = new SecretKeySpec("dummySecretKey1234".getBytes(StandardCharsets.UTF_8), "HmacSHA256");
 	}
 
 	@BeforeEach
 	public void setup() throws Exception {
-		// Bind to port 0 to let the OS assign an available port.
-		receiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair);
+		receiver = new TestVoteReceiver("127.0.0.1", 0);
+		parser = new VoteParser();
+		proxyHeaderProcessor = new ProxyHeaderProcessor();
 	}
 
 	@AfterEach
@@ -70,110 +71,16 @@ public class VoteReceiverTest {
 		receiver.shutdown();
 	}
 
-	/**
-	 * A dummy subclass of VoteReceiver for testing. We override abstract methods
-	 * and expose helper methods for processing votes.
-	 */
 	private static class TestVoteReceiver extends VoteReceiver {
 
 		private final String testChallenge = "testChallenge";
 
-		public TestVoteReceiver(String host, int port, KeyPair keyPair) throws Exception {
+		public TestVoteReceiver(String host, int port) throws Exception {
 			super(host, port);
 		}
 
-		/**
-		 * Process a V1 vote block. The block is assumed to be exactly the RSA-encrypted
-		 * vote block.
-		 */
-		public Vote processV1Vote(byte[] encryptedBlock) throws Exception {
-			byte[] decrypted = RSA.decrypt(encryptedBlock, getKeyPair().getPrivate());
-			int position = 0;
-			String opcode = readString(decrypted, position);
-			position += opcode.length() + 1;
-			if (!opcode.equals("VOTE")) {
-				throw new Exception("Invalid opcode: " + opcode);
-			}
-			String serviceName = readString(decrypted, position);
-			position += serviceName.length() + 1;
-			String username = readString(decrypted, position);
-			position += username.length() + 1;
-			String address = readString(decrypted, position);
-			position += address.length() + 1;
-			String timeStamp = readString(decrypted, position);
-			position += timeStamp.length() + 1;
-			Vote vote = new Vote();
-			vote.setServiceName(serviceName);
-			vote.setUsername(username);
-			vote.setAddress(address);
-			vote.setTimeStamp(timeStamp);
-			return vote;
-		}
-
-		/**
-		 * Process a V2 vote payload in JSON format.
-		 * This method mirrors the validation logic from the main VoteReceiver implementation.
-		 */
-		public Vote processV2Vote(String jsonPayload) throws Exception {
-			Gson gson = new Gson();
-			JsonObject outer = gson.fromJson(jsonPayload, JsonObject.class);
-			
-			// Validate and extract the outer payload and signature fields (matching main implementation).
-			if (!outer.has("payload")) {
-				throw new Exception("Invalid vote format: Missing required 'payload' field in outer JSON from test");
-			}
-			if (!outer.has("signature")) {
-				throw new Exception("Invalid vote format: Missing required 'signature' field in outer JSON from test");
-			}
-			
-			String payload = outer.get("payload").getAsString();
-			String sigHash = outer.get("signature").getAsString();
-			
-			// Validate Base64 signature (matching main implementation).
-			try {
-				Base64.getDecoder().decode(sigHash);
-			} catch (IllegalArgumentException e) {
-				throw new Exception("Invalid vote format: Signature is not valid Base64 from test: " + e.getMessage());
-			}
-			
-			JsonObject inner = gson.fromJson(payload, JsonObject.class);
-			
-			// Validate required fields in inner payload (matching main implementation).
-			if (!inner.has("serviceName")) {
-				throw new Exception("Invalid vote format: Missing required 'serviceName' field in vote payload from test");
-			}
-			if (!inner.has("username")) {
-				throw new Exception("Invalid vote format: Missing required 'username' field in vote payload from test");
-			}
-			if (!inner.has("address")) {
-				throw new Exception("Invalid vote format: Missing required 'address' field in vote payload from test");
-			}
-			if (!inner.has("timestamp")) {
-				throw new Exception("Invalid vote format: Missing required 'timestamp' field in vote payload from test");
-			}
-			if (!inner.has("challenge")) {
-				throw new Exception("Invalid vote format: Missing required 'challenge' field in vote payload from test");
-			}
-			
-			// Verify challenge.
-			String receivedChallenge = inner.get("challenge").getAsString();
-			if (!receivedChallenge.equals(getChallenge())) {
-				throw new Exception("Authentication failed: Invalid challenge (expected '" + getChallenge() + "' but got '" + receivedChallenge + "') from test");
-			}
-			
-			Vote vote = new Vote();
-			vote.setServiceName(inner.get("serviceName").getAsString());
-			vote.setUsername(inner.get("username").getAsString());
-			vote.setAddress(inner.get("address").getAsString());
-			vote.setTimeStamp(inner.get("timestamp").getAsString());
-
-			return vote;
-		}
-
-		// Dummy implementations for abstract methods:
 		@Override
 		public boolean isUseTokens() {
-			// For testing, we decide based on our mode.
 			return false;
 		}
 
@@ -191,6 +98,10 @@ public class VoteReceiverTest {
 
 		@Override
 		public void debug(String msg) {
+		}
+
+		@Override
+		public void debug(Exception e) {
 		}
 
 		@Override
@@ -223,22 +134,6 @@ public class VoteReceiverTest {
 		}
 
 		@Override
-		public void debug(Exception e) {
-		}
-
-		// Expose readString method (reimplementation)
-		public String readString(byte[] data, int offset) {
-			StringBuilder builder = new StringBuilder();
-			for (int i = offset; i < data.length; i++) {
-				if (data[i] == '\n')
-					break;
-				builder.append((char) data[i]);
-			}
-			return builder.toString();
-		}
-
-		// For V2, challenge is always testChallenge.
-		@Override
 		public String getChallenge() {
 			return testChallenge;
 		}
@@ -250,83 +145,91 @@ public class VoteReceiverTest {
 	}
 
 	@Test
-	public void testV1Vote() throws Exception {
-		// Construct a vote message for V1.
+	public void testDetectV1VoteProtocol() throws Exception {
+		String voteMsg = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
+		Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+		cipher.init(Cipher.ENCRYPT_MODE, testKeyPair.getPublic());
+		byte[] encrypted = cipher.doFinal(voteMsg.getBytes(StandardCharsets.UTF_8));
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(encrypted), 512);
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V1, version);
+	}
+
+	@Test
+	public void testParseV1Vote() throws Exception {
 		String voteMsg = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
 		Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
 		cipher.init(Cipher.ENCRYPT_MODE, testKeyPair.getPublic());
 		byte[] encrypted = cipher.doFinal(voteMsg.getBytes(StandardCharsets.UTF_8));
 		assertEquals(256, encrypted.length);
 
-		Vote vote = receiver.processV1Vote(encrypted);
-		assertNotNull(vote);
-		assertEquals("votifier.bencodez.com", vote.getServiceName());
-		assertEquals("testUser", vote.getUsername());
-		assertEquals("127.0.0.1", vote.getAddress());
-		assertEquals("TestTimestamp", vote.getTimeStamp());
-		vote.setSourceAddress("192.168.1.1"); // Add sourceAddress
-		assertEquals("192.168.1.1", vote.getSourceAddress());
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(encrypted), 512);
+		VoteRequest request = parser.parse(in, VoteProtocolVersion.V1, receiver, "test-address", receiver.getChallenge());
+
+		assertNotNull(request);
+		assertEquals("votifier.bencodez.com", request.getServiceName());
+		assertEquals("testUser", request.getUsername());
+		assertEquals("127.0.0.1", request.getAddress());
+		assertEquals("TestTimestamp", request.getTimeStamp());
 	}
 
 	@Test
-	public void testV2Vote() throws Exception {
-	    // Construct a JSON payload for V2.
-	    String challenge = "testChallenge";
-	    JsonObject inner = new JsonObject();
-	    inner.addProperty("serviceName", "votifier.bencodez.com");
-	    inner.addProperty("username", "testUserV2");
-	    inner.addProperty("address", "127.0.0.1");
-	    inner.addProperty("timestamp", "TestTimestampV2");
-	    inner.addProperty("challenge", challenge);
-	    String payload = inner.toString();
+	public void testDetectV2VoteProtocol() throws Exception {
+		String jsonPayload = "{\"payload\":\"{}\",\"signature\":\"dGVzdA==\"}";
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(jsonPayload.getBytes(StandardCharsets.UTF_8)), 512);
 
-	    // Compute HMAC signature using dummyTokenKey.
-	    Mac mac = Mac.getInstance("HmacSHA256"); // Declare and initialize mac
-	    mac.init(dummyTokenKey);
-	    byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
-	    String signature = Base64.getEncoder().encodeToString(signatureBytes);
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+	}
 
-	    JsonObject outer = new JsonObject();
-	    outer.addProperty("payload", payload);
-	    outer.addProperty("signature", signature);
-	    String jsonPayload = outer.toString();
+	@Test
+	public void testParseV2Vote() throws Exception {
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", "testUserV2");
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestampV2");
+		inner.addProperty("challenge", "testChallenge");
+		String payload = inner.toString();
 
-	    // Create a new TestVoteReceiver in token mode.
-	    TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
-	        @Override
-	        public boolean isUseTokens() {
-	            return true;
-	        }
-	    };
-	    Vote vote = tokenReceiver.processV2Vote(jsonPayload);
-	    assertNotNull(vote);
-	    assertEquals("votifier.bencodez.com", vote.getServiceName());
-	    assertEquals("testUserV2", vote.getUsername());
-	    assertEquals("127.0.0.1", vote.getAddress());
-	    assertEquals("TestTimestampV2", vote.getTimeStamp());
-	    vote.setSourceAddress("192.168.1.2"); // Add sourceAddress
-	    assertEquals("192.168.1.2", vote.getSourceAddress());
-	    tokenReceiver.shutdown();
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+		String signature = Base64.getEncoder().encodeToString(signatureBytes);
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
+
+		VoteRequest request = parser.parse(in, VoteProtocolVersion.V2, receiver, "test-address", receiver.getChallenge());
+
+		assertNotNull(request);
+		assertEquals("votifier.bencodez.com", request.getServiceName());
+		assertEquals("testUserV2", request.getUsername());
+		assertEquals("127.0.0.1", request.getAddress());
+		assertEquals("TestTimestampV2", request.getTimeStamp());
 	}
 
 	@Test
 	public void testProxyV1Header() throws Exception {
-		// Test processing of a PROXY protocol v1 header.
 		String proxyHeader = "PROXY TCP4 192.168.1.1 192.168.1.2 1234 80\r\n";
 		String remainingData = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
 		String input = proxyHeader + remainingData;
+
 		PushbackInputStream pis = new PushbackInputStream(
 				new ByteArrayInputStream(input.getBytes(StandardCharsets.US_ASCII)), 512);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(baos, StandardCharsets.US_ASCII));
 
-		// Use reflection to call the private processProxyHeaders method.
-		Method method = VoteReceiver.class.getDeclaredMethod("processProxyHeaders", PushbackInputStream.class,
-				BufferedWriter.class);
-		method.setAccessible(true);
-		method.invoke(receiver, pis, writer);
+		ProxyHeaderProcessor.ProxyHeaderResult result = proxyHeaderProcessor.process(pis, writer, receiver);
 
-		// After processing, the remaining data should be the vote payload.
+		assertEquals("192.168.1.1", result.getRealIp());
+
 		byte[] remaining = new byte[remainingData.length()];
 		int read = pis.read(remaining);
 		String output = new String(remaining, 0, read, StandardCharsets.US_ASCII);
@@ -335,26 +238,23 @@ public class VoteReceiverTest {
 
 	@Test
 	public void testConnectHeader() throws Exception {
-		// Test processing of an HTTP CONNECT header.
 		String connectHeader = "CONNECT some.host:443 HTTP/1.1\r\nHost: some.host:443\r\n\r\n";
 		String remainingData = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
 		String input = connectHeader + remainingData;
+
 		PushbackInputStream pis = new PushbackInputStream(
 				new ByteArrayInputStream(input.getBytes(StandardCharsets.US_ASCII)), 512);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(baos, StandardCharsets.US_ASCII));
 
-		Method method = VoteReceiver.class.getDeclaredMethod("processProxyHeaders", PushbackInputStream.class,
-				BufferedWriter.class);
-		method.setAccessible(true);
-		method.invoke(receiver, pis, writer);
+		ProxyHeaderProcessor.ProxyHeaderResult result = proxyHeaderProcessor.process(pis, writer, receiver);
 		writer.flush();
 
-		// The writer should contain the HTTP CONNECT response.
+		assertEquals(null, result.getRealIp());
+
 		String response = baos.toString("ASCII");
 		assertTrue(response.contains("200 Connection Established"));
 
-		// The remaining data in the stream should be the vote payload.
 		byte[] remaining = new byte[remainingData.length()];
 		int read = pis.read(remaining);
 		String output = new String(remaining, 0, read, StandardCharsets.US_ASCII);
@@ -363,71 +263,41 @@ public class VoteReceiverTest {
 
 	@Test
 	public void testV2VoteMissingPayloadField() throws Exception {
-		// Test V2 vote with missing "payload" field - should throw exception
-		// Note: Payload field validation occurs before signature validation,
-		// so we expect the payload error to be thrown first.
-		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
-			@Override
-			public boolean isUseTokens() {
-				return true;
-			}
-		};
-
 		JsonObject outer = new JsonObject();
 		outer.addProperty("signature", "dummySignature");
-		// Missing "payload" field
-		String jsonPayload = outer.toString();
 
-		Exception exception = assertThrows(Exception.class, () -> {
-			tokenReceiver.processV2Vote(jsonPayload);
-		});
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 
-		assertTrue(exception.getMessage().contains("Missing required 'payload' field"),
+		Exception exception = assertThrows(Exception.class,
+				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
+
+		assertTrue(exception.getMessage().contains("Missing required fields in outer JSON"),
 				"Expected error message about missing payload field, got: " + exception.getMessage());
-		tokenReceiver.shutdown();
 	}
 
 	@Test
 	public void testV2VoteMissingSignatureField() throws Exception {
-		// Test V2 vote with missing "signature" field - should throw exception
-		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
-			@Override
-			public boolean isUseTokens() {
-				return true;
-			}
-		};
-
 		JsonObject outer = new JsonObject();
 		outer.addProperty("payload", "{}");
-		// Missing "signature" field
-		String jsonPayload = outer.toString();
 
-		Exception exception = assertThrows(Exception.class, () -> {
-			tokenReceiver.processV2Vote(jsonPayload);
-		});
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 
-		assertTrue(exception.getMessage().contains("Missing required 'signature' field"),
+		Exception exception = assertThrows(Exception.class,
+				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
+
+		assertTrue(exception.getMessage().contains("Missing required fields in outer JSON"),
 				"Expected error message about missing signature field, got: " + exception.getMessage());
-		tokenReceiver.shutdown();
 	}
 
 	@Test
 	public void testV2VoteMissingUsernameField() throws Exception {
-		// Test V2 vote with missing "username" field in inner payload
-		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
-			@Override
-			public boolean isUseTokens() {
-				return true;
-			}
-		};
-
-		String challenge = "testChallenge";
 		JsonObject inner = new JsonObject();
 		inner.addProperty("serviceName", "votifier.bencodez.com");
-		// Missing "username" field
 		inner.addProperty("address", "127.0.0.1");
 		inner.addProperty("timestamp", "TestTimestamp");
-		inner.addProperty("challenge", challenge);
+		inner.addProperty("challenge", "testChallenge");
 		String payload = inner.toString();
 
 		Mac mac = Mac.getInstance("HmacSHA256");
@@ -438,33 +308,25 @@ public class VoteReceiverTest {
 		JsonObject outer = new JsonObject();
 		outer.addProperty("payload", payload);
 		outer.addProperty("signature", signature);
-		String jsonPayload = outer.toString();
 
-		Exception exception = assertThrows(Exception.class, () -> {
-			tokenReceiver.processV2Vote(jsonPayload);
-		});
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 
-		assertTrue(exception.getMessage().contains("Missing required 'username' field"),
+		Exception exception = assertThrows(Exception.class,
+				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
+
+		assertTrue(exception.getMessage().contains("Missing required fields in inner JSON"),
 				"Expected error message about missing username field, got: " + exception.getMessage());
-		tokenReceiver.shutdown();
 	}
 
 	@Test
 	public void testV2VoteInvalidChallenge() throws Exception {
-		// Test V2 vote with incorrect challenge value
-		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
-			@Override
-			public boolean isUseTokens() {
-				return true;
-			}
-		};
-
 		JsonObject inner = new JsonObject();
 		inner.addProperty("serviceName", "votifier.bencodez.com");
 		inner.addProperty("username", "testUser");
 		inner.addProperty("address", "127.0.0.1");
 		inner.addProperty("timestamp", "TestTimestamp");
-		inner.addProperty("challenge", "wrongChallenge"); // Wrong challenge
+		inner.addProperty("challenge", "wrongChallenge");
 		String payload = inner.toString();
 
 		Mac mac = Mac.getInstance("HmacSHA256");
@@ -475,27 +337,19 @@ public class VoteReceiverTest {
 		JsonObject outer = new JsonObject();
 		outer.addProperty("payload", payload);
 		outer.addProperty("signature", signature);
-		String jsonPayload = outer.toString();
 
-		Exception exception = assertThrows(Exception.class, () -> {
-			tokenReceiver.processV2Vote(jsonPayload);
-		});
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
+
+		Exception exception = assertThrows(Exception.class,
+				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
 
 		assertTrue(exception.getMessage().contains("Invalid challenge"),
 				"Expected error message about invalid challenge, got: " + exception.getMessage());
-		tokenReceiver.shutdown();
 	}
 
 	@Test
 	public void testV2VoteInvalidBase64Signature() throws Exception {
-		// Test V2 vote with invalid base64 signature
-		TestVoteReceiver tokenReceiver = new TestVoteReceiver("127.0.0.1", 0, testKeyPair) {
-			@Override
-			public boolean isUseTokens() {
-				return true;
-			}
-		};
-
 		JsonObject inner = new JsonObject();
 		inner.addProperty("serviceName", "votifier.bencodez.com");
 		inner.addProperty("username", "testUser");
@@ -506,15 +360,39 @@ public class VoteReceiverTest {
 
 		JsonObject outer = new JsonObject();
 		outer.addProperty("payload", payload);
-		outer.addProperty("signature", "not-valid-base64!!!"); // Invalid base64
-		String jsonPayload = outer.toString();
+		outer.addProperty("signature", "not-valid-base64!!!");
 
-		Exception exception = assertThrows(Exception.class, () -> {
-			tokenReceiver.processV2Vote(jsonPayload);
-		});
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
+
+		Exception exception = assertThrows(Exception.class,
+				() -> parser.parse(in, VoteProtocolVersion.V2, receiver, "test", receiver.getChallenge()));
 
 		assertTrue(exception.getMessage().contains("Signature is not valid Base64"),
 				"Expected error message about invalid base64, got: " + exception.getMessage());
-		tokenReceiver.shutdown();
+	}
+
+	@Test
+	public void testBuildVoteFromParsedRequest() throws Exception {
+		String voteMsg = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
+		Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+		cipher.init(Cipher.ENCRYPT_MODE, testKeyPair.getPublic());
+		byte[] encrypted = cipher.doFinal(voteMsg.getBytes(StandardCharsets.UTF_8));
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(encrypted), 512);
+		VoteRequest request = parser.parse(in, VoteProtocolVersion.V1, receiver, "test-address", receiver.getChallenge());
+
+		Vote vote = new Vote();
+		vote.setServiceName(request.getServiceName());
+		vote.setUsername(request.getUsername());
+		vote.setAddress(request.getAddress());
+		vote.setTimeStamp(request.getTimeStamp());
+		vote.setSourceAddress("192.168.1.1");
+
+		assertEquals("votifier.bencodez.com", vote.getServiceName());
+		assertEquals("testUser", vote.getUsername());
+		assertEquals("127.0.0.1", vote.getAddress());
+		assertEquals("TestTimestamp", vote.getTimeStamp());
+		assertEquals("192.168.1.1", vote.getSourceAddress());
 	}
 }

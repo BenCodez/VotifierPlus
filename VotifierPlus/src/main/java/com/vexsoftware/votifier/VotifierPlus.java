@@ -58,6 +58,7 @@ import com.vexsoftware.votifier.crypto.RSAKeygen;
 import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.model.VotifierEvent;
+import com.vexsoftware.votifier.net.ThrottleConfig;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
 import lombok.Getter;

@@ -10,191 +10,159 @@ import java.util.Collections;
 
 import org.junit.jupiter.api.Test;
 
-import com.vexsoftware.votifier.net.VoteReceiver;
+import com.vexsoftware.votifier.net.ThrottleConfig;
+import com.vexsoftware.votifier.net.VoteThrottleService;
 
 /**
- * Unit tests for VoteReceiver throttling components:
- * - LogLimiter: rate-limited logging with suppressed counts
- * - ThrottleManager: failures-in-window -> hard throttle + optional per-client ban
- *
- * NOTE:
- * These tests require VoteReceiver.LogLimiter and VoteReceiver.ThrottleManager to be
- * package-visible (not private) or moved to their own package-visible classes.
+ * Unit tests for VoteThrottleService after throttling was moved out of VoteReceiver.
  */
 public class VoteReceiverThrottleTest {
 
-  // ---------------------------------------------------------------------------
-  // LogLimiter tests
-  // ---------------------------------------------------------------------------
-
 	@Test
 	public void testLogLimiterSuppressesWithinWindowAndReportsSuppressedCount() throws Exception {
-	  VoteReceiver.LogLimiter limiter = new VoteReceiver.LogLimiter(200); // 200ms window
+		VoteThrottleService service = new VoteThrottleService(
+				new ThrottleConfig(true, Collections.<String>emptySet(), "5s", 3, "10s", 2, "10s", false, 999, "1s",
+						"200ms"));
 
-	  String first = limiter.allow("k", "hello");
-	  assertEquals("hello", first);
+		String first = service.allowLog("k", "hello");
+		assertEquals("hello", first);
 
-	  // Immediately repeated -> suppressed
-	  assertNull(limiter.allow("k", "hello2"));
-	  assertNull(limiter.allow("k", "hello3"));
+		assertNull(service.allowLog("k", "hello2"));
+		assertNull(service.allowLog("k", "hello3"));
 
-	  // Poll until window has elapsed (avoid flaky sleep timing)
-	  long deadline = System.currentTimeMillis() + 1500; // 1.5s should be plenty
-	  String next = null;
+		long deadline = System.currentTimeMillis() + 1500;
+		String next = null;
 
-	  while (System.currentTimeMillis() < deadline) {
-	    next = limiter.allow("k", "hello-again");
-	    if (next != null) break;
-	    Thread.sleep(10);
-	  }
+		while (System.currentTimeMillis() < deadline) {
+			next = service.allowLog("k", "hello-again");
+			if (next != null) {
+				break;
+			}
+			Thread.sleep(10);
+		}
 
-	  assertNotNull(next, "Expected limiter to allow after window elapsed, but it never did");
-	  assertTrue(next.startsWith("hello-again"));
-	  assertTrue(next.contains("suppressed 2"), "Expected suppressed count, got: " + next);
+		assertNotNull(next, "Expected limiter to allow after window elapsed, but it never did");
+		assertTrue(next.startsWith("hello-again"));
+		assertTrue(next.contains("suppressed 2"), "Expected suppressed count, got: " + next);
 	}
 
+	@Test
+	public void testLogLimiterIndependentKeys() {
+		VoteThrottleService service = new VoteThrottleService(
+				new ThrottleConfig(true, Collections.<String>emptySet(), "5s", 3, "10s", 2, "10s", false, 999, "1s",
+						"10s"));
 
-  @Test
-  public void testLogLimiterIndependentKeys() {
-    VoteReceiver.LogLimiter limiter = new VoteReceiver.LogLimiter(10_000);
+		assertNotNull(service.allowLog("a", "a1"));
+		assertNotNull(service.allowLog("b", "b1"));
 
-    assertNotNull(limiter.allow("a", "a1"));
-    assertNotNull(limiter.allow("b", "b1"));
+		assertNull(service.allowLog("a", "a2"));
+		assertNull(service.allowLog("b", "b2"));
+	}
 
-    // Each key suppresses independently
-    assertNull(limiter.allow("a", "a2"));
-    assertNull(limiter.allow("b", "b2"));
-  }
+	private static ThrottleConfig cfg(String window, int failures, String throttleFor, int tunnelFailures,
+			String tunnelThrottleFor, boolean perClientEnabled, int perClientFailures, String perClientFor) {
+		return new ThrottleConfig(true, Collections.<String>emptySet(), window, failures, throttleFor, tunnelFailures,
+				tunnelThrottleFor, perClientEnabled, perClientFailures, perClientFor, "60s");
+	}
 
-  // ---------------------------------------------------------------------------
-  // ThrottleManager tests
-  // ---------------------------------------------------------------------------
+	@Test
+	public void testThrottleHardBlocksAfterThresholdWithinWindow() {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 3, "10s", 2, "10s", false, 999, "1s"));
 
-  private static VoteReceiver.ThrottleConfig cfg(
-      String window,
-      int failures,
-      String throttleFor,
-      int tunnelFailures,
-      String tunnelThrottleFor,
-      boolean perClientEnabled,
-      int perClientFailures,
-      String perClientFor) {
+		String key = "tunnel:1.2.3.4";
 
-    return new VoteReceiver.ThrottleConfig(
-        true,
-        Collections.<String>emptySet(), // tunnelRemoteIps not needed here
-        window, failures, throttleFor,
-        tunnelFailures, tunnelThrottleFor,
-        perClientEnabled, perClientFailures, perClientFor,
-        "60s" // logWindow not used in manager tests
-    );
-  }
+		assertFalse(service.isBlocked(key));
 
-  @Test
-  public void testThrottleHardBlocksAfterThresholdWithinWindow() {
-    VoteReceiver.ThrottleManager tm = new VoteReceiver.ThrottleManager(
-        cfg("5s", 3, "10s", 2, "10s", false, 999, "1s")
-    );
+		service.fail(key, false, false);
+		assertFalse(service.isBlocked(key));
 
-    String key = "tunnel:1.2.3.4";
+		service.fail(key, false, false);
+		assertFalse(service.isBlocked(key));
 
-    assertFalse(tm.isBlocked(key));
+		service.fail(key, false, false);
+		assertTrue(service.isBlocked(key));
+		assertTrue(service.retryAfterMs(key) > 0);
+	}
 
-    tm.fail(key, false, false);
-    assertFalse(tm.isBlocked(key));
+	@Test
+	public void testThrottleUsesTunnelThresholdsWhenTunnelModeTrue() {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 10, "10s", 2, "10s", false, 999, "1s"));
 
-    tm.fail(key, false, false);
-    assertFalse(tm.isBlocked(key));
+		String key = "tunnel:playit";
 
-    // 3rd failure triggers hard throttle (failures=3)
-    tm.fail(key, false, false);
-    assertTrue(tm.isBlocked(key));
-    assertTrue(tm.retryAfterMs(key) > 0);
-  }
+		service.fail(key, true, false);
+		assertFalse(service.isBlocked(key));
 
-  @Test
-  public void testThrottleUsesTunnelThresholdsWhenTunnelModeTrue() {
-    // normal failures=10, tunnelFailures=2 -> tunnel should block quickly
-    VoteReceiver.ThrottleManager tm = new VoteReceiver.ThrottleManager(
-        cfg("5s", 10, "10s", 2, "10s", false, 999, "1s")
-    );
+		service.fail(key, true, false);
+		assertTrue(service.isBlocked(key));
+	}
 
-    String key = "tunnel:playit";
+	@Test
+	public void testPerClientBanOnlyWhenRealIpKnown() {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 999, "10s", 999, "10s", true, 2, "30s"));
 
-    tm.fail(key, true, false);
-    assertFalse(tm.isBlocked(key));
+		String key = "ip:9.9.9.9";
 
-    // 2nd failure triggers tunnel throttle
-    tm.fail(key, true, false);
-    assertTrue(tm.isBlocked(key));
-  }
+		service.fail(key, false, false);
+		service.fail(key, false, false);
+		assertFalse(service.isBlocked(key), "Should not ban when realIpKnown=false");
 
-  @Test
-  public void testPerClientBanOnlyWhenRealIpKnown() {
-    // per-client ban: 2 failures -> ban
-    VoteReceiver.ThrottleManager tm = new VoteReceiver.ThrottleManager(
-        cfg("5s", 999, "10s", 999, "10s", true, 2, "30s")
-    );
+		service.fail(key, false, true);
+		assertTrue(service.isBlocked(key), "Expected ban when realIpKnown=true");
+		assertTrue(service.retryAfterMs(key) > 0);
+	}
 
-    String key = "ip:9.9.9.9";
+	@Test
+	public void testSuccessResetsFailureCounter() {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("10s", 3, "10s", 3, "10s", false, 999, "1s"));
 
-    // same failure count, but realIpKnown=false should NOT ban
-    tm.fail(key, false, false);
-    tm.fail(key, false, false);
-    assertFalse(tm.isBlocked(key), "Should not ban when realIpKnown=false");
+		String key = "tunnel:reset";
 
-    // now realIpKnown=true should ban on threshold
-    tm.fail(key, false, true); // 3rd failure
-    assertTrue(tm.isBlocked(key), "Expected ban when realIpKnown=true");
-    assertTrue(tm.retryAfterMs(key) > 0);
-  }
+		service.fail(key, false, false);
+		service.fail(key, false, false);
 
-  @Test
-  public void testSuccessResetsFailureCounter() {
-    VoteReceiver.ThrottleManager tm = new VoteReceiver.ThrottleManager(
-        cfg("10s", 3, "10s", 3, "10s", false, 999, "1s")
-    );
+		service.success(key);
 
-    String key = "tunnel:reset";
+		service.fail(key, false, false);
+		assertFalse(service.isBlocked(key));
 
-    tm.fail(key, false, false);
-    tm.fail(key, false, false);
+		service.fail(key, false, false);
+		assertFalse(service.isBlocked(key));
 
-    // Reset due to successful vote
-    tm.success(key);
+		service.fail(key, false, false);
+		assertTrue(service.isBlocked(key));
+	}
 
-    // Two more failures should NOT immediately trigger throttle (needs 3 again)
-    tm.fail(key, false, false);
-    assertFalse(tm.isBlocked(key));
+	@Test
+	public void testWindowExpiryResetsFailureCounter() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("150ms", 2, "1s", 2, "1s", false, 999, "1s"));
 
-    tm.fail(key, false, false);
-    assertFalse(tm.isBlocked(key));
+		String key = "tunnel:window";
 
-    tm.fail(key, false, false);
-    assertTrue(tm.isBlocked(key));
-  }
+		service.fail(key, false, false);
+		assertFalse(service.isBlocked(key));
 
-  @Test
-  public void testWindowExpiryResetsFailureCounter() throws Exception {
-    // very short window to make test fast
-    VoteReceiver.ThrottleManager tm = new VoteReceiver.ThrottleManager(
-        cfg("150ms", 2, "1s", 2, "1s", false, 999, "1s")
-    );
+		Thread.sleep(200);
 
-    String key = "tunnel:window";
+		service.fail(key, false, false);
+		assertFalse(service.isBlocked(key));
 
-    tm.fail(key, false, false);
-    assertFalse(tm.isBlocked(key));
+		service.fail(key, false, false);
+		assertTrue(service.isBlocked(key));
+	}
 
-    // wait for window to expire so failures reset
-    Thread.sleep(200);
+	@Test
+	public void testTunnelModeDetection() {
+		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("10.0.0.1"), "5s", 3, "10s", 2,
+				"20s", false, 999, "1s", "60s");
+		VoteThrottleService service = new VoteThrottleService(config);
 
-    // Failure count should have reset; one failure won't throttle
-    tm.fail(key, false, false);
-    assertFalse(tm.isBlocked(key));
-
-    // second within new window should throttle
-    tm.fail(key, false, false);
-    assertTrue(tm.isBlocked(key));
-  }
+		assertTrue(service.isTunnelMode("10.0.0.1"));
+		assertFalse(service.isTunnelMode("10.0.0.2"));
+	}
 }
