@@ -40,7 +40,7 @@ public class Config extends VelocityYMLFile {
 	}
 
 	public String getToken(String key) {
-		return getString(getNode("tokens", key), null);
+		return getString(getNode("tokens", key), "");
 	}
 
 	public boolean containsTokens() {

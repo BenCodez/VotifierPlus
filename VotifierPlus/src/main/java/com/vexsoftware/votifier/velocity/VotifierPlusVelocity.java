@@ -88,9 +88,15 @@ public class VotifierPlusVelocity {
 		}
 
 		for (ConfigurationNode key : config.getTokens()) {
-			// Configurate 4: key() replaces getKey()
 			String tokenId = String.valueOf(key.key());
-			tokens.put(tokenId, TokenUtil.createKeyFrom(config.getToken(tokenId)));
+			String token = config.getToken(tokenId);
+
+			if (token == null || token.trim().isEmpty()) {
+				logger.warn("Skipping empty token for token id: " + tokenId);
+				continue;
+			}
+
+			tokens.put(tokenId, TokenUtil.createKeyFrom(token));
 		}
 	}
 
