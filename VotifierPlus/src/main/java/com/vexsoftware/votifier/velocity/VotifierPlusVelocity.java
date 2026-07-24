@@ -76,7 +76,10 @@ public class VotifierPlusVelocity {
 
 	@Subscribe
 	public void onProxyDisable(ProxyShutdownEvent event) {
-		voteReceiver.shutdown();
+		if (voteReceiver != null) {
+			voteReceiver.shutdown();
+			voteReceiver = null;
+		}
 	}
 
 	private HashMap<String, Key> tokens = new HashMap<String, Key>();
@@ -184,7 +187,6 @@ public class VotifierPlusVelocity {
 				// Specify other aliases (optional)
 				.aliases("votifierplus", "votifierplusvelocity").build();
 		server.getCommandManager().register(meta, new VotifierPlusVelocityCommand(this));
-		loadVoteReceiver();
 		File rsaDirectory = new File(dataDirectory.toFile(), "rsa");
 		/*
 		 * Create RSA directory and keys if it does not exist; otherwise, read keys.
@@ -201,6 +203,7 @@ public class VotifierPlusVelocity {
 			logger.error("Error reading configuration file or RSA keys");
 			return;
 		}
+		loadVoteReceiver();
 
 		try {
 			getVersionFile();
@@ -224,9 +227,9 @@ public class VotifierPlusVelocity {
 
 	}
 
-	private void loadVoteReceiver() {
+	private boolean loadVoteReceiver() {
 		try {
-			voteReceiver = new VoteReceiver(config.getHost(), config.getPort()) {
+			VoteReceiver receiver = new VoteReceiver(config.getHost(), config.getPort()) {
 
 				@Override
 				public void logWarning(String warn) {
@@ -353,17 +356,24 @@ public class VotifierPlusVelocity {
 				}
 
 			};
-			voteReceiver.start();
+			receiver.start();
+			voteReceiver = receiver;
 
 			logger.info("Votifier enabled.");
+			return true;
 		} catch (Exception ex) {
-			return;
+			logger.error("Unable to start Votifier vote receiver.", ex);
+			return false;
 		}
 	}
 
-	public void reload() {
+	public boolean reload() {
+		if (voteReceiver != null) {
+			voteReceiver.shutdown();
+			voteReceiver = null;
+		}
 		config.reload();
 		loadTokens();
-		loadVoteReceiver();
+		return loadVoteReceiver();
 	}
 }

@@ -48,7 +48,7 @@ public class VotifierPlusCommand extends Command {
 					}
 					sender.sendMessage(new TextComponent("New keys generated"));
 				}
-				if (args[0].equalsIgnoreCase("vote") && args.length > 2) {
+				if ((args[0].equalsIgnoreCase("test") || args[0].equalsIgnoreCase("vote")) && args.length > 2) {
 					try {
 						PublicKey publicKey = bungee.getKeyPair().getPublic();
 						String serverIP = bungee.getConfig().getHost();
