@@ -31,8 +31,12 @@ public class VotifierPlusVelocityCommand implements SimpleCommand {
 		if (hasPermission(invocation)) {
 			if (args.length > 0) {
 				if (args[0].equalsIgnoreCase("reload")) {
-					plugin.reload();
-					source.sendMessage(Component.text("Reloading VotifierPlus").color(NamedTextColor.AQUA));
+					if (plugin.reload()) {
+						source.sendMessage(Component.text("Reloaded VotifierPlus").color(NamedTextColor.AQUA));
+					} else {
+						source.sendMessage(Component.text("Failed to reload VotifierPlus; check the proxy log.")
+								.color(NamedTextColor.RED));
+					}
 				}
 				if (args[0].equalsIgnoreCase("GenerateKeys")) {
 					File rsaDirectory = new File(plugin.getDataDirectory() + File.separator + "rsa");
@@ -52,7 +56,7 @@ public class VotifierPlusVelocityCommand implements SimpleCommand {
 					}
 					source.sendMessage(Component.text("New keys generated"));
 				}
-				if (args[0].equalsIgnoreCase("vote") && args.length > 2) {
+				if ((args[0].equalsIgnoreCase("test") || args[0].equalsIgnoreCase("vote")) && args.length > 2) {
 					try {
 						PublicKey publicKey = plugin.getKeyPair().getPublic();
 						String serverIP = plugin.getConfig().getHost();

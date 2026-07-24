@@ -126,9 +126,21 @@ public class VotifierPlusBungee extends Plugin {
 	}
 
 	public void reload() {
+		if (voteReceiver != null) {
+			voteReceiver.shutdown();
+			voteReceiver = null;
+		}
 		config.load();
 		loadTokens();
 		loadVoteReceiver();
+	}
+
+	@Override
+	public void onDisable() {
+		if (voteReceiver != null) {
+			voteReceiver.shutdown();
+			voteReceiver = null;
+		}
 	}
 
 	private void loadVoteReceiver() {
