@@ -161,7 +161,9 @@ public class EmptyConnectionHandlingTest {
 
 		@Override
 		public void logWarning(String warning) {
-			warnings.add(warning);
+			if (warnings != null) {
+				warnings.add(warning);
+			}
 		}
 
 		@Override
@@ -174,12 +176,16 @@ public class EmptyConnectionHandlingTest {
 
 		@Override
 		public void debug(String message) {
-			debugMessages.add(message);
+			if (debugMessages != null) {
+				debugMessages.add(message);
+			}
 		}
 
 		@Override
 		public void debug(Exception exception) {
-			debugMessages.add(exception.toString());
+			if (debugMessages != null) {
+				debugMessages.add(exception.toString());
+			}
 		}
 
 		@Override
