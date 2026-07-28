@@ -63,7 +63,9 @@ public class VoteConnectionHandler {
 			String challenge = receiver.getChallenge();
 			sendHandshakeIfNeeded(in, writer, challenge);
 
-			waitForPayload(in, address);
+			if (!waitForPayload(in, accepted, address)) {
+				return null;
+			}
 
 			String realIp = null;
 			ProxyHeaderProcessor.ProxyHeaderResult proxyResult = proxyHeaderProcessor.process(in, writer, receiver);
@@ -178,21 +180,21 @@ public class VoteConnectionHandler {
 		receiver.debug("Sent handshake: " + message);
 	}
 
-	private void waitForPayload(PushbackInputStream in, String address) throws Exception {
-		long waitStart = System.currentTimeMillis();
+	private boolean waitForPayload(PushbackInputStream in, Socket socket, String address) throws Exception {
+		int previousTimeout = socket.getSoTimeout();
 
-		while (in.available() == 0 && System.currentTimeMillis() - waitStart < 2000) {
-			try {
-				Thread.sleep(50);
-			} catch (InterruptedException ex) {
-				Thread.currentThread().interrupt();
-				break;
+		try {
+			socket.setSoTimeout(2000);
+			int firstByte = in.read();
+			if (firstByte == -1) {
+				receiver.debug("Connection closed without payload from " + address);
+				return false;
 			}
-		}
 
-		if (in.available() == 0) {
-			receiver.debug("No vote payload received after handshake; closing connection from " + address);
-			throw new SocketTimeoutException("No vote payload received");
+			in.unread(firstByte);
+			return true;
+		} finally {
+			socket.setSoTimeout(previousTimeout);
 		}
 	}
 
