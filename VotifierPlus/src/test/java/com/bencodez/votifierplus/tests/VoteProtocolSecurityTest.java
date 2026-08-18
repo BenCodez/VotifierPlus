@@ -92,14 +92,14 @@ public class VoteProtocolSecurityTest {
 		try (ServerSocket serverSocket = new ServerSocket(0);
 				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
 				Socket accepted = serverSocket.accept()) {
-			client.getOutputStream().write(createV1Packet("compatibilityUser"));
+			client.getOutputStream().write(createV1Packet("compatibilityUsr"));
 			client.getOutputStream().flush();
 
 			Future<Vote> future = executor.submit(() -> handler.handle(accepted));
 			Vote vote = future.get(2, TimeUnit.SECONDS);
 
 			assertNotNull(vote);
-			assertEquals("compatibilityUser", vote.getUsername());
+			assertEquals("compatibilityUsr", vote.getUsername());
 		}
 	}
 
