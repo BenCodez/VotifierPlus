@@ -78,6 +78,10 @@ public class Config {
 		return getData().getBoolean("TokenSupport", false);
 	}
 
+	public boolean getDisableV1() {
+		return getData().getBoolean("DisableV1", false);
+	}
+
 	public String getToken(String key) {
 		return getData().getString("tokens." + key, null);
 	}
