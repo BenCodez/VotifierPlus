@@ -153,7 +153,7 @@ public class VoteConnectionHandler {
 					"Decryption failed: Invalid V1 vote block / public key mismatch from " + remoteIp);
 		} catch (SocketTimeoutException ex) {
 			throttleService.logWarning(receiver, "timeout|" + remoteIp,
-					"Connection timeout while reading vote data from " + remoteIp + " - " + ex.getMessage());
+					"Connection timeout while waiting for vote payload from " + remoteIp + " - " + ex.getMessage());
 		} catch (SocketException ex) {
 			throttleService.logWarning(receiver, "socket|" + remoteIp,
 					"Connection error: Protocol error from " + remoteIp + " - " + ex.getLocalizedMessage());
