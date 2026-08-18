@@ -90,14 +90,6 @@ public class VoteConnectionHandler {
 				throw new VoteAuthenticationException("Votifier V1 votes are disabled by configuration");
 			}
 
-			if (version == VoteProtocolVersion.V1 && in.available() < 256) {
-				throttleService.fail(throttleKey, tunnelMode, realIpKnown);
-				throttleService.logWarning(receiver, "shortv1|" + throttleKey,
-						"Invalid vote format: Insufficient data for V1 vote block from "
-								+ (realIpKnown ? realIp : remoteIp) + " (expected 256 bytes)");
-				return null;
-			}
-
 			VoteRequest request = voteParser.parse(in, version, receiver, address, challenge);
 
 			Vote vote = new Vote();
