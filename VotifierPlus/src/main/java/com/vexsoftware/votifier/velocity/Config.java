@@ -59,4 +59,8 @@ public class Config extends VelocityYMLFile {
 	public boolean getTokenSupport() {
 		return getBoolean(getNode("TokenSupport"), false);
 	}
+
+	public boolean getDisableV1() {
+		return getBoolean(getNode("DisableV1"), false);
+	}
 }
