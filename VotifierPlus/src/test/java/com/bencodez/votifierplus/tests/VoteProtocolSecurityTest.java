@@ -104,6 +104,35 @@ public class VoteProtocolSecurityTest {
 	}
 
 	@Test
+	public void testFragmentedV1PacketIsReadCompletely() throws Exception {
+		receiver.setUseTokens(false);
+		VoteProtocolPolicy.setDisableV1(false);
+		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, new VoteThrottleService(null));
+
+		try (ServerSocket serverSocket = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
+				Socket accepted = serverSocket.accept()) {
+			Future<Vote> future = executor.submit(() -> handler.handle(accepted));
+			BufferedReader reader = new BufferedReader(
+					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
+			OutputStream output = client.getOutputStream();
+
+			assertEquals("VOTIFIER 1", reader.readLine());
+			byte[] packet = createV1Packet("fragmentedUser");
+			output.write(packet, 0, 32);
+			output.flush();
+			Thread.sleep(50);
+			output.write(packet, 32, packet.length - 32);
+			output.flush();
+
+			assertTrue(reader.readLine().contains("\"status\":\"ok\""));
+			Vote vote = future.get(2, TimeUnit.SECONDS);
+			assertNotNull(vote);
+			assertEquals("fragmentedUser", vote.getUsername());
+		}
+	}
+
+	@Test
 	public void testDisableV1RejectsDelayedV1PacketInTokenMode() throws Exception {
 		receiver.setUseTokens(true);
 		VoteProtocolPolicy.setDisableV1(true);
