@@ -68,7 +68,8 @@ public class VoteConnectionHandler {
 			}
 
 			String realIp = null;
-			ProxyHeaderProcessor.ProxyHeaderResult proxyResult = proxyHeaderProcessor.process(in, writer, receiver);
+			ProxyHeaderProcessor.ProxyHeaderResult proxyResult = proxyHeaderProcessor.process(in, writer, receiver,
+					accepted);
 			realIp = proxyResult.getRealIp();
 
 			realIpKnown = realIp != null && !realIp.isEmpty();
@@ -84,6 +85,10 @@ public class VoteConnectionHandler {
 
 			VoteProtocolVersion version = voteParser.detectVersion(in);
 			receiver.debug("Detected vote protocol version: " + version);
+
+			if (receiver.isDisableV1() && version == VoteProtocolVersion.V1) {
+				throw new VoteAuthenticationException("Votifier V1 votes are disabled by configuration");
+			}
 
 			if (version == VoteProtocolVersion.V1 && in.available() < 256) {
 				throttleService.fail(throttleKey, tunnelMode, realIpKnown);
@@ -148,7 +153,7 @@ public class VoteConnectionHandler {
 					"Decryption failed: Invalid V1 vote block / public key mismatch from " + remoteIp);
 		} catch (SocketTimeoutException ex) {
 			throttleService.logWarning(receiver, "timeout|" + remoteIp,
-					"Connection timeout while waiting for vote payload from " + remoteIp + " - " + ex.getMessage());
+					"Connection timeout while reading vote data from " + remoteIp + " - " + ex.getMessage());
 		} catch (SocketException ex) {
 			throttleService.logWarning(receiver, "socket|" + remoteIp,
 					"Connection error: Protocol error from " + remoteIp + " - " + ex.getLocalizedMessage());
@@ -162,13 +167,11 @@ public class VoteConnectionHandler {
 
 	private void sendHandshakeIfNeeded(PushbackInputStream in, BufferedWriter writer, String challenge)
 			throws Exception {
-		String message = receiver.isUseTokens() ? "VOTIFIER 2" : "VOTIFIER 1";
-		if (receiver.isUseTokens()) {
-			message += " " + challenge;
-		}
+		boolean useV2Handshake = receiver.isUseTokens() || receiver.isDisableV1();
+		String message = useV2Handshake ? "VOTIFIER 2 " + challenge : "VOTIFIER 1";
 
 		int available = in.available();
-		if (available >= 256) {
+		if (available >= 256 && !receiver.isDisableV1()) {
 			receiver.debug("Detected V1 vote payload before handshake (available bytes: " + available
 					+ "), skipping handshake.");
 			return;
