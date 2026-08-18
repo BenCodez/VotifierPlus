@@ -80,6 +80,11 @@ public class Config extends YMLFile {
 	@Setter
 	private boolean tokenSupport = false;
 
+	@ConfigDataBoolean(path = "DisableV1")
+	@Getter
+	@Setter
+	private boolean disableV1 = false;
+
 	public ConfigurationSection getForwardingConfiguration(String s) {
 		return getData().getConfigurationSection("Forwarding." + s);
 	}
