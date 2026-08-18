@@ -68,7 +68,8 @@ public class VoteConnectionHandler {
 			}
 
 			String realIp = null;
-			ProxyHeaderProcessor.ProxyHeaderResult proxyResult = proxyHeaderProcessor.process(in, writer, receiver);
+			ProxyHeaderProcessor.ProxyHeaderResult proxyResult = proxyHeaderProcessor.process(in, writer, receiver,
+					accepted);
 			realIp = proxyResult.getRealIp();
 
 			realIpKnown = realIp != null && !realIp.isEmpty();
@@ -85,12 +86,8 @@ public class VoteConnectionHandler {
 			VoteProtocolVersion version = voteParser.detectVersion(in);
 			receiver.debug("Detected vote protocol version: " + version);
 
-			if (version == VoteProtocolVersion.V1 && in.available() < 256) {
-				throttleService.fail(throttleKey, tunnelMode, realIpKnown);
-				throttleService.logWarning(receiver, "shortv1|" + throttleKey,
-						"Invalid vote format: Insufficient data for V1 vote block from "
-								+ (realIpKnown ? realIp : remoteIp) + " (expected 256 bytes)");
-				return null;
+			if (receiver.isDisableV1() && version == VoteProtocolVersion.V1) {
+				throw new VoteAuthenticationException("Votifier V1 votes are disabled by configuration");
 			}
 
 			VoteRequest request = voteParser.parse(in, version, receiver, address, challenge);
@@ -162,13 +159,11 @@ public class VoteConnectionHandler {
 
 	private void sendHandshakeIfNeeded(PushbackInputStream in, BufferedWriter writer, String challenge)
 			throws Exception {
-		String message = receiver.isUseTokens() ? "VOTIFIER 2" : "VOTIFIER 1";
-		if (receiver.isUseTokens()) {
-			message += " " + challenge;
-		}
+		boolean useV2Handshake = receiver.isUseTokens() || receiver.isDisableV1();
+		String message = useV2Handshake ? "VOTIFIER 2 " + challenge : "VOTIFIER 1";
 
 		int available = in.available();
-		if (available >= 256) {
+		if (available >= 256 && !receiver.isDisableV1()) {
 			receiver.debug("Detected V1 vote payload before handshake (available bytes: " + available
 					+ "), skipping handshake.");
 			return;

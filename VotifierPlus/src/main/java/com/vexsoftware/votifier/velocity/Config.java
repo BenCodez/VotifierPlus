@@ -8,11 +8,13 @@ import org.spongepowered.configurate.ConfigurationNode;
 import org.spongepowered.configurate.serialize.SerializationException;
 
 import com.bencodez.simpleapi.file.velocity.VelocityYMLFile;
+import com.vexsoftware.votifier.net.VoteProtocolPolicy;
 
 public class Config extends VelocityYMLFile {
 
 	public Config(File file) {
 		super(file);
+		VoteProtocolPolicy.setDisableV1(getDisableV1());
 	}
 
 	public String getHost() {
@@ -57,6 +59,11 @@ public class Config extends VelocityYMLFile {
 	}
 
 	public boolean getTokenSupport() {
+		VoteProtocolPolicy.setDisableV1(getDisableV1());
 		return getBoolean(getNode("TokenSupport"), false);
+	}
+
+	public boolean getDisableV1() {
+		return getBoolean(getNode("DisableV1"), false);
 	}
 }

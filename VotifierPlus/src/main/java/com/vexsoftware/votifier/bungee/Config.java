@@ -6,6 +6,8 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.util.Set;
 
+import com.vexsoftware.votifier.net.VoteProtocolPolicy;
+
 import lombok.Getter;
 import net.md_5.bungee.config.Configuration;
 import net.md_5.bungee.config.ConfigurationProvider;
@@ -36,6 +38,7 @@ public class Config {
 		try {
 			data = ConfigurationProvider.getProvider(YamlConfiguration.class)
 					.load(new File(bungee.getDataFolder(), "bungeeconfig.yml"));
+			VoteProtocolPolicy.setDisableV1(getDisableV1());
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -76,6 +79,10 @@ public class Config {
 
 	public boolean getTokenSupport() {
 		return getData().getBoolean("TokenSupport", false);
+	}
+
+	public boolean getDisableV1() {
+		return getData().getBoolean("DisableV1", false);
 	}
 
 	public String getToken(String key) {

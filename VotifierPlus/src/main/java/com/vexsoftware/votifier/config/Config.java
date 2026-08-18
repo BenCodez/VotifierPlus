@@ -14,6 +14,7 @@ import com.bencodez.simpleapi.file.annotation.ConfigDataInt;
 import com.bencodez.simpleapi.file.annotation.ConfigDataKeys;
 import com.bencodez.simpleapi.file.annotation.ConfigDataString;
 import com.vexsoftware.votifier.VotifierPlus;
+import com.vexsoftware.votifier.net.VoteProtocolPolicy;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -27,6 +28,13 @@ public class Config extends YMLFile {
 	public void loadValues() {
 		new AnnotationHandler().load(getData(), this);
 		debug = DebugLevel.getDebug(debugLevelStr);
+		VoteProtocolPolicy.setDisableV1(disableV1);
+	}
+
+	@Override
+	public void reloadData() {
+		super.reloadData();
+		VoteProtocolPolicy.setDisableV1(getData().getBoolean("DisableV1", false));
 	}
 
 	@Override
@@ -79,6 +87,11 @@ public class Config extends YMLFile {
 	@Getter
 	@Setter
 	private boolean tokenSupport = false;
+
+	@ConfigDataBoolean(path = "DisableV1")
+	@Getter
+	@Setter
+	private boolean disableV1 = false;
 
 	public ConfigurationSection getForwardingConfiguration(String s) {
 		return getData().getConfigurationSection("Forwarding." + s);

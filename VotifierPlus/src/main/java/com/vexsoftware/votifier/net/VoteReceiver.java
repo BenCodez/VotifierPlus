@@ -60,6 +60,7 @@
  */
 package com.vexsoftware.votifier.net;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -72,9 +73,11 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Cipher;
@@ -138,7 +141,7 @@ public abstract class VoteReceiver extends Thread {
 		shutdownExecutor(connectionExecutor, "connection");
 		shutdownExecutor(forwardExecutor, "forward");
 	}
-	
+
 	private void shutdownExecutor(ExecutorService executor, String name) {
 		if (executor == null) {
 			return;
@@ -162,8 +165,20 @@ public abstract class VoteReceiver extends Thread {
 		return 4;
 	}
 
+	public int getConnectionQueueCapacity() {
+		return 64;
+	}
+
+	public long getConnectionQueueTimeoutMillis() {
+		return 5000L;
+	}
+
 	public int getForwardWorkerCount() {
 		return 1;
+	}
+
+	public int getForwardQueueCapacity() {
+		return 256;
 	}
 
 	@Override
@@ -171,61 +186,95 @@ public abstract class VoteReceiver extends Thread {
 		throttleService = new VoteThrottleService(getThrottleConfig());
 		voteForwarder = new VoteForwarder(this);
 
-		connectionExecutor = Executors.newFixedThreadPool(getConnectionWorkerCount(), new ThreadFactory() {
-			private int id = 1;
+		if (isUseTokens() && !isDisableV1()) {
+			logWarning("TokenSupport is enabled, but legacy Votifier V1 votes are still accepted. "
+					+ "Set DisableV1: true to require token-authenticated V2 votes.");
+		}
 
-			@Override
-			public Thread newThread(Runnable r) {
-				Thread thread = new Thread(r, "Votifier-Connection-" + id++);
-				thread.setDaemon(true);
-				return thread;
-			}
-		});
+		int connectionWorkerCount = getConnectionWorkerCount();
+		connectionExecutor = new ThreadPoolExecutor(connectionWorkerCount, connectionWorkerCount, 0L,
+				TimeUnit.MILLISECONDS, new ArrayBlockingQueue<Runnable>(getConnectionQueueCapacity()),
+				new ThreadFactory() {
+					private int id = 1;
 
-		forwardExecutor = Executors.newFixedThreadPool(getForwardWorkerCount(), new ThreadFactory() {
-			@Override
-			public Thread newThread(Runnable r) {
-				Thread thread = new Thread(r, "Votifier-Forwarder");
-				thread.setDaemon(true);
-				return thread;
-			}
-		});
+					@Override
+					public Thread newThread(Runnable r) {
+						Thread thread = new Thread(r, "Votifier-Connection-" + id++);
+						thread.setDaemon(true);
+						return thread;
+					}
+				}, new ThreadPoolExecutor.AbortPolicy());
+
+		int forwardWorkerCount = getForwardWorkerCount();
+		forwardExecutor = new ThreadPoolExecutor(forwardWorkerCount, forwardWorkerCount, 0L, TimeUnit.MILLISECONDS,
+				new ArrayBlockingQueue<Runnable>(getForwardQueueCapacity()), new ThreadFactory() {
+					private int id = 1;
+
+					@Override
+					public Thread newThread(Runnable r) {
+						Thread thread = new Thread(r, "Votifier-Forwarder-" + id++);
+						thread.setDaemon(true);
+						return thread;
+					}
+				}, new ThreadPoolExecutor.CallerRunsPolicy());
 
 		final VoteConnectionHandler handler = new VoteConnectionHandler(this, throttleService);
 
 		while (running) {
 			try {
 				final Socket socket = server.accept();
+				final long acceptedAtNanos = System.nanoTime();
 
-				connectionExecutor.submit(new Runnable() {
-					@Override
-					public void run() {
-						try {
-							Vote vote = handler.handle(socket);
-							if (vote != null) {
-								callEvent(vote);
+				try {
+					socket.setSoTimeout(5000);
+				} catch (SocketException ex) {
+					closeConnection(socket);
+					throw ex;
+				}
 
-								final Vote forwardVote = vote;
-								forwardExecutor.submit(new Runnable() {
-									@Override
-									public void run() {
-										try {
-											voteForwarder.forwardVote(forwardVote);
-										} catch (Exception ex) {
-											logWarning("Error forwarding vote: "
-													+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
-															: ex.getLocalizedMessage()));
-										}
-									}
-								});
+				try {
+					connectionExecutor.execute(new Runnable() {
+						@Override
+						public void run() {
+							long queueTimeoutMillis = getConnectionQueueTimeoutMillis();
+							if (queueTimeoutMillis > 0 && System.nanoTime() - acceptedAtNanos > TimeUnit.MILLISECONDS
+									.toNanos(queueTimeoutMillis)) {
+								closeConnection(socket);
+								debug("Closed stale vote connection after it exceeded the connection queue deadline.");
+								return;
 							}
-						} catch (Exception ex) {
-							logWarning("Error processing vote connection: "
-									+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
-											: ex.getLocalizedMessage()));
+
+							try {
+								Vote vote = handler.handle(socket);
+								if (vote != null) {
+									callEvent(vote);
+
+									final Vote forwardVote = vote;
+									forwardExecutor.execute(new Runnable() {
+										@Override
+										public void run() {
+											try {
+												voteForwarder.forwardVote(forwardVote);
+											} catch (Exception ex) {
+												logWarning("Error forwarding vote: "
+														+ (ex.getLocalizedMessage() == null
+																? ex.getClass().getSimpleName()
+																: ex.getLocalizedMessage()));
+											}
+										}
+									});
+								}
+							} catch (Exception ex) {
+								logWarning("Error processing vote connection: "
+										+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
+												: ex.getLocalizedMessage()));
+							}
 						}
-					}
-				});
+					});
+				} catch (RejectedExecutionException ex) {
+					closeConnection(socket);
+					debug("Rejected vote connection because the connection queue is full.");
+				}
 			} catch (SocketException ex) {
 				if (running) {
 					logWarning("Connection error while accepting vote socket: " + ex.getLocalizedMessage());
@@ -240,7 +289,24 @@ public abstract class VoteReceiver extends Thread {
 		}
 	}
 
+	private void closeConnection(Socket socket) {
+		try {
+			socket.close();
+		} catch (IOException ex) {
+			debug(ex);
+		}
+	}
+
 	public abstract boolean isUseTokens();
+
+	/**
+	 * Returns whether legacy Votifier V1 packets must be rejected.
+	 *
+	 * @return true when only V2 votes should be accepted
+	 */
+	public boolean isDisableV1() {
+		return VoteProtocolPolicy.isDisableV1();
+	}
 
 	public abstract ThrottleConfig getThrottleConfig();
 

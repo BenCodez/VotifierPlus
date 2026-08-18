@@ -3,8 +3,11 @@ Debug: false
 host: 0.0.0.0
 # The port VotifierPlus will listen on
 port: 8192
-# This is still new to VotifierPlus, so it's disabled by default.
+# Enables Votifier v2 token/HMAC support while retaining V1 compatibility.
 TokenSupport: false
+# Rejects all legacy Votifier v1 RSA packets and forces a V2 handshake.
+# Keep this false if any configured voting site only supports V1.
+DisableV1: false
 
 # -----------------------------------------------------------------------------
 # Connection throttling & spam reduction for Votifier
