@@ -305,7 +305,7 @@ public abstract class VoteReceiver extends Thread {
 	 * @return true when only V2 votes should be accepted
 	 */
 	public boolean isDisableV1() {
-		return false;
+		return VoteProtocolPolicy.isDisableV1();
 	}
 
 	public abstract ThrottleConfig getThrottleConfig();
