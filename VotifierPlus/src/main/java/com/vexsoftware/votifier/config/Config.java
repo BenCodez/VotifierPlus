@@ -14,6 +14,7 @@ import com.bencodez.simpleapi.file.annotation.ConfigDataInt;
 import com.bencodez.simpleapi.file.annotation.ConfigDataKeys;
 import com.bencodez.simpleapi.file.annotation.ConfigDataString;
 import com.vexsoftware.votifier.VotifierPlus;
+import com.vexsoftware.votifier.net.VoteProtocolPolicy;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -27,6 +28,7 @@ public class Config extends YMLFile {
 	public void loadValues() {
 		new AnnotationHandler().load(getData(), this);
 		debug = DebugLevel.getDebug(debugLevelStr);
+		VoteProtocolPolicy.setDisableV1(disableV1);
 	}
 
 	@Override
