@@ -32,6 +32,12 @@ public class Config extends YMLFile {
 	}
 
 	@Override
+	public void reloadData() {
+		super.reloadData();
+		VoteProtocolPolicy.setDisableV1(getData().getBoolean("DisableV1", false));
+	}
+
+	@Override
 	public void onFileCreation() {
 		VotifierPlus.getInstance().saveResource("config.yml", true);
 	}
