@@ -29,6 +29,7 @@ public class VoteParser {
 
 	private static final Gson GSON = new Gson();
 	private static final short PROTOCOL_2_MAGIC = (short) 0x733A;
+	private static final int PROTOCOL_2_PREFIX_BYTES = 5;
 
 	private static final String FIELD_PAYLOAD = "payload";
 	private static final String FIELD_SIGNATURE = "signature";
@@ -47,21 +48,30 @@ public class VoteParser {
 	 * @throws Exception if there is not enough data to determine the protocol
 	 */
 	public VoteProtocolVersion detectVersion(PushbackInputStream in) throws Exception {
-		byte[] header = new byte[2];
-		int bytesRead = in.read(header);
+		byte[] header = new byte[PROTOCOL_2_PREFIX_BYTES];
+		int bytesRead = 0;
+		while (bytesRead < header.length) {
+			int read = in.read(header, bytesRead, header.length - bytesRead);
+			if (read == -1) {
+				break;
+			}
+			bytesRead += read;
+		}
+
 		if (bytesRead < 2) {
 			throw new Exception("Not enough data available to determine vote protocol version.");
 		}
 
+		in.unread(header, 0, bytesRead);
+
 		if ((char) header[0] == '{') {
-			in.unread(header, 0, bytesRead);
 			return VoteProtocolVersion.V2;
 		}
 
-		in.unread(header, 0, bytesRead);
-
 		short magic = (short) (((header[0] & 0xFF) << 8) | (header[1] & 0xFF));
-		if (magic == PROTOCOL_2_MAGIC) {
+		int payloadLength = ((header[2] & 0xFF) << 8) | (header[3] & 0xFF);
+		if (bytesRead == PROTOCOL_2_PREFIX_BYTES && magic == PROTOCOL_2_MAGIC && payloadLength > 0
+				&& header[4] == '{') {
 			return VoteProtocolVersion.V2;
 		}
 
