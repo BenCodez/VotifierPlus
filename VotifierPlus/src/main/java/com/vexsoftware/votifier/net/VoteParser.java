@@ -13,6 +13,7 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Map;
 
@@ -178,7 +179,8 @@ public class VoteParser {
 			String address, String challenge, Socket socket) throws Exception {
 		JsonObjectBoundaryScanner scanner = new JsonObjectBoundaryScanner();
 		byte[] prefix = voteData.toByteArray();
-		boolean complete = scanner.scan(prefix, 0, prefix.length) >= 0;
+		int jsonBoundaryBytes = scanner.scan(prefix, 0, prefix.length);
+		boolean complete = jsonBoundaryBytes >= 0;
 		Exception v1Failure = null;
 		boolean v1Attempted = false;
 		byte[] buffer = new byte[4096];
@@ -213,14 +215,21 @@ public class VoteParser {
 				throw failure;
 			}
 
+			int previousSize = voteData.size();
 			int completeAt = scanner.scan(buffer, 0, read);
-			int bytesToKeep = completeAt >= 0 ? completeAt : read;
-			voteData.write(buffer, 0, bytesToKeep);
+			// The entire chunk has already been consumed from the socket. Preserve its
+			// suffix for a possible fixed-size V1 fallback, while parsing V2 only up
+			// to the detected JSON boundary.
+			voteData.write(buffer, 0, read);
+			if (completeAt >= 0) {
+				jsonBoundaryBytes = previousSize + completeAt;
+			}
 			complete = completeAt >= 0;
 		}
 
 		try {
-			return parseV2(voteData.toByteArray(), receiver, address, challenge);
+			byte[] candidate = voteData.toByteArray();
+			return parseV2(Arrays.copyOf(candidate, jsonBoundaryBytes), receiver, address, challenge);
 		} catch (Exception v2Failure) {
 			if (v1Failure != null) {
 				v2Failure.addSuppressed(v1Failure);
@@ -323,11 +332,26 @@ public class VoteParser {
 	private boolean readV1CollisionRemainder(PushbackInputStream in, ByteArrayOutputStream voteData, Socket socket,
 			Exception v2Failure) throws Exception {
 		int previousTimeout = socket.getSoTimeout();
-		int graceTimeout = previousTimeout <= 0 ? V1_COLLISION_GRACE_TIMEOUT_MS
-				: Math.min(previousTimeout, V1_COLLISION_GRACE_TIMEOUT_MS);
+		long deadlineNanos = System.nanoTime() + V1_COLLISION_GRACE_TIMEOUT_MS * 1_000_000L;
+		byte[] buffer = new byte[V1_BLOCK_BYTES - voteData.size()];
 		try {
-			socket.setSoTimeout(graceTimeout);
-			return readToSize(in, voteData, V1_BLOCK_BYTES);
+			while (voteData.size() < V1_BLOCK_BYTES) {
+				long remainingNanos = deadlineNanos - System.nanoTime();
+				if (remainingNanos <= 0) {
+					return false;
+				}
+
+				int remainingMillis = (int) Math.max(1, (remainingNanos + 999_999L) / 1_000_000L);
+				int readTimeout = previousTimeout <= 0 ? remainingMillis : Math.min(previousTimeout, remainingMillis);
+				socket.setSoTimeout(readTimeout);
+
+				int read = in.read(buffer, 0, Math.min(buffer.length, V1_BLOCK_BYTES - voteData.size()));
+				if (read == -1) {
+					return false;
+				}
+				voteData.write(buffer, 0, read);
+			}
+			return true;
 		} catch (SocketTimeoutException ex) {
 			v2Failure.addSuppressed(ex);
 			return false;
