@@ -9,6 +9,8 @@ package com.vexsoftware.votifier.net;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PushbackInputStream;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.util.Base64;
@@ -33,6 +35,7 @@ public class VoteParser {
 	private static final int PROTOCOL_VERSION_PREFIX_BYTES = 2;
 	private static final int V1_BLOCK_BYTES = 256;
 	private static final int MAX_V2_PACKET_BYTES = 4 + 0xFFFF;
+	private static final int V1_COLLISION_GRACE_TIMEOUT_MS = 250;
 
 	private static final String FIELD_PAYLOAD = "payload";
 	private static final String FIELD_SIGNATURE = "signature";
@@ -92,6 +95,24 @@ public class VoteParser {
 	 */
 	public VoteRequest parse(PushbackInputStream in, VoteProtocolVersion version, VoteReceiver receiver, String address,
 			String challenge) throws Exception {
+		return parse(in, version, receiver, address, challenge, null);
+	}
+
+	/**
+	 * Parses a vote payload with access to the connection socket so an ambiguous
+	 * V1 collision can receive a short, bounded TCP-fragment grace period.
+	 *
+	 * @param in        the input stream
+	 * @param version   the detected protocol version
+	 * @param receiver  the vote receiver
+	 * @param address   remote address string for logging/errors
+	 * @param challenge expected challenge for V2
+	 * @param socket    accepted socket, or null when no timeout control is available
+	 * @return parsed vote request data
+	 * @throws Exception on parse/validation/authentication errors
+	 */
+	public VoteRequest parse(PushbackInputStream in, VoteProtocolVersion version, VoteReceiver receiver, String address,
+			String challenge, Socket socket) throws Exception {
 		if (version == VoteProtocolVersion.V1) {
 			return parseV1(in, receiver, address);
 		}
@@ -104,17 +125,17 @@ public class VoteParser {
 		byte[] prefix = voteData.toByteArray();
 		short magic = (short) (((prefix[0] & 0xFF) << 8) | (prefix[1] & 0xFF));
 		if (magic == PROTOCOL_2_MAGIC) {
-			return parseFramedV2(in, voteData, receiver, address, challenge);
+			return parseFramedV2(in, voteData, receiver, address, challenge, socket);
 		}
 		if ((char) prefix[0] == '{') {
-			return parseUnframedV2(in, voteData, receiver, address, challenge);
+			return parseUnframedV2(in, voteData, receiver, address, challenge, socket);
 		}
 
 		throw new InvalidVoteException("Invalid V2 protocol prefix from " + address);
 	}
 
 	private VoteRequest parseFramedV2(PushbackInputStream in, ByteArrayOutputStream voteData, VoteReceiver receiver,
-			String address, String challenge) throws Exception {
+			String address, String challenge, Socket socket) throws Exception {
 		if (!readToSize(in, voteData, 4)) {
 			throw new InvalidVoteException("Incomplete V2 frame header from " + address);
 		}
@@ -149,12 +170,12 @@ public class VoteParser {
 			if (v1Failure != null) {
 				v2Failure.addSuppressed(v1Failure);
 			}
-			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure);
+			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure, socket);
 		}
 	}
 
 	private VoteRequest parseUnframedV2(PushbackInputStream in, ByteArrayOutputStream voteData, VoteReceiver receiver,
-			String address, String challenge) throws Exception {
+			String address, String challenge, Socket socket) throws Exception {
 		JsonObjectBoundaryScanner scanner = new JsonObjectBoundaryScanner();
 		byte[] prefix = voteData.toByteArray();
 		boolean complete = scanner.scan(prefix, 0, prefix.length) >= 0;
@@ -204,7 +225,7 @@ public class VoteParser {
 			if (v1Failure != null) {
 				v2Failure.addSuppressed(v1Failure);
 			}
-			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure);
+			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure, socket);
 		}
 	}
 
@@ -275,17 +296,18 @@ public class VoteParser {
 	}
 
 	private VoteRequest fallbackToBufferedV1OrThrow(PushbackInputStream in, ByteArrayOutputStream voteData,
-			VoteReceiver receiver, String address, Exception v2Failure) throws Exception {
+			VoteReceiver receiver, String address, Exception v2Failure, Socket socket) throws Exception {
 		if (receiver.isDisableV1() || voteData.size() > V1_BLOCK_BYTES) {
 			throw v2Failure;
 		}
 
 		int remaining = V1_BLOCK_BYTES - voteData.size();
 		if (remaining > 0) {
-			// Do not hold a connection worker after a complete V2 packet. A colliding
-			// V1 sender has already written the rest of its fixed-size block, so only
-			// consume it when the whole remainder is currently buffered.
-			if (in.available() < remaining || !readToSize(in, voteData, V1_BLOCK_BYTES)) {
+			if (socket == null) {
+				if (in.available() < remaining || !readToSize(in, voteData, V1_BLOCK_BYTES)) {
+					throw v2Failure;
+				}
+			} else if (!readV1CollisionRemainder(in, voteData, socket, v2Failure)) {
 				throw v2Failure;
 			}
 		}
@@ -295,6 +317,22 @@ public class VoteParser {
 		} catch (Exception v1Failure) {
 			v2Failure.addSuppressed(v1Failure);
 			throw v2Failure;
+		}
+	}
+
+	private boolean readV1CollisionRemainder(PushbackInputStream in, ByteArrayOutputStream voteData, Socket socket,
+			Exception v2Failure) throws Exception {
+		int previousTimeout = socket.getSoTimeout();
+		int graceTimeout = previousTimeout <= 0 ? V1_COLLISION_GRACE_TIMEOUT_MS
+				: Math.min(previousTimeout, V1_COLLISION_GRACE_TIMEOUT_MS);
+		try {
+			socket.setSoTimeout(graceTimeout);
+			return readToSize(in, voteData, V1_BLOCK_BYTES);
+		} catch (SocketTimeoutException ex) {
+			v2Failure.addSuppressed(ex);
+			return false;
+		} finally {
+			socket.setSoTimeout(previousTimeout);
 		}
 	}
 
