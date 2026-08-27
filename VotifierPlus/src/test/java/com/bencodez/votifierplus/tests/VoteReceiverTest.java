@@ -187,6 +187,38 @@ public class VoteReceiverTest {
 	}
 
 	@Test
+	public void testDetectFramedV2VoteProtocol() throws Exception {
+		byte[] jsonPayload = "{\"payload\":\"{}\",\"signature\":\"dGVzdA==\"}".getBytes(StandardCharsets.UTF_8);
+		ByteArrayOutputStream framedPayload = new ByteArrayOutputStream();
+		framedPayload.write(0x73);
+		framedPayload.write(0x3A);
+		framedPayload.write((jsonPayload.length >>> 8) & 0xFF);
+		framedPayload.write(jsonPayload.length & 0xFF);
+		framedPayload.write(jsonPayload);
+
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(framedPayload.toByteArray()), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+	}
+
+	@Test
+	public void testV1MagicPrefixCollisionIsNotDetectedAsV2() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = 0x73;
+		v1Block[1] = 0x3A;
+		v1Block[2] = 0;
+		v1Block[3] = 64;
+		v1Block[4] = 1;
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V1, version);
+	}
+
+	@Test
 	public void testParseV2Vote() throws Exception {
 		JsonObject inner = new JsonObject();
 		inner.addProperty("serviceName", "votifier.bencodez.com");
