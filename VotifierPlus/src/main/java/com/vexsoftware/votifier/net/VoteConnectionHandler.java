@@ -90,7 +90,7 @@ public class VoteConnectionHandler {
 				throw new VoteAuthenticationException("Votifier V1 votes are disabled by configuration");
 			}
 
-			VoteRequest request = voteParser.parse(in, version, receiver, address, challenge);
+			VoteRequest request = voteParser.parse(in, version, receiver, address, challenge, accepted);
 
 			Vote vote = new Vote();
 			vote.setServiceName(request.getServiceName());
