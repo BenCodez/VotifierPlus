@@ -232,6 +232,31 @@ public class VoteReceiverTest {
 	}
 
 	@Test
+	public void testFragmentedV1MagicPrefixCollisionAttemptsV1Fallback() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = 0x73;
+		v1Block[1] = 0x3A;
+		v1Block[2] = 0;
+		v1Block[3] = 64;
+		v1Block[4] = '{';
+		v1Block[5] = '}';
+
+		ByteArrayInputStream fragmented = new ByteArrayInputStream(v1Block) {
+			@Override
+			public synchronized int available() {
+				return pos <= 2 ? 0 : super.available();
+			}
+		};
+		PushbackInputStream in = new PushbackInputStream(fragmented, 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(1, failure.getSuppressed().length);
+	}
+
+	@Test
 	public void testV1MagicPrefixCollisionDoesNotFallbackWhenV1IsDisabled() throws Exception {
 		byte[] v1Block = new byte[256];
 		v1Block[0] = 0x73;
