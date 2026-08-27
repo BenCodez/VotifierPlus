@@ -76,6 +76,7 @@ public class VoteReceiverTest {
 	private static class TestVoteReceiver extends VoteReceiver {
 
 		private final String testChallenge = "testChallenge";
+		private boolean disableV1;
 
 		public TestVoteReceiver(String host, int port) throws Exception {
 			super(host, port);
@@ -84,6 +85,15 @@ public class VoteReceiverTest {
 		@Override
 		public boolean isUseTokens() {
 			return false;
+		}
+
+		@Override
+		public boolean isDisableV1() {
+			return disableV1;
+		}
+
+		public void setDisableV1(boolean disableV1) {
+			this.disableV1 = disableV1;
 		}
 
 		@Override
@@ -148,10 +158,9 @@ public class VoteReceiverTest {
 
 	@Test
 	public void testDetectV1VoteProtocol() throws Exception {
-		String voteMsg = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
-		Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-		cipher.init(Cipher.ENCRYPT_MODE, testKeyPair.getPublic());
-		byte[] encrypted = cipher.doFinal(voteMsg.getBytes(StandardCharsets.UTF_8));
+		byte[] encrypted = new byte[256];
+		encrypted[0] = 1;
+		encrypted[1] = 2;
 
 		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(encrypted), 512);
 		VoteProtocolVersion version = parser.detectVersion(in);
@@ -188,7 +197,7 @@ public class VoteReceiverTest {
 
 	@Test
 	public void testDetectFramedV2VoteProtocol() throws Exception {
-		byte[] jsonPayload = "{\"payload\":\"{}\",\"signature\":\"dGVzdA==\"}".getBytes(StandardCharsets.UTF_8);
+		byte[] jsonPayload = " \r\n{\"payload\":\"{}\",\"signature\":\"dGVzdA==\"}".getBytes(StandardCharsets.UTF_8);
 		ByteArrayOutputStream framedPayload = new ByteArrayOutputStream();
 		framedPayload.write(0x73);
 		framedPayload.write(0x3A);
@@ -204,18 +213,56 @@ public class VoteReceiverTest {
 	}
 
 	@Test
-	public void testV1MagicPrefixCollisionIsNotDetectedAsV2() throws Exception {
+	public void testV1MagicPrefixCollisionAttemptsV1Fallback() throws Exception {
 		byte[] v1Block = new byte[256];
 		v1Block[0] = 0x73;
 		v1Block[1] = 0x3A;
 		v1Block[2] = 0;
 		v1Block[3] = 64;
-		v1Block[4] = 1;
+		v1Block[4] = '{';
+		v1Block[5] = '}';
 
 		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
 
 		VoteProtocolVersion version = parser.detectVersion(in);
-		assertEquals(VoteProtocolVersion.V1, version);
+		assertEquals(VoteProtocolVersion.V2, version);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(1, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testV1MagicPrefixCollisionDoesNotFallbackWhenV1IsDisabled() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = 0x73;
+		v1Block[1] = 0x3A;
+		v1Block[2] = 0;
+		v1Block[3] = 64;
+		v1Block[4] = '{';
+		v1Block[5] = '}';
+		receiver.setDisableV1(true);
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(0, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testV1JsonPrefixCollisionAttemptsV1Fallback() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = '{';
+		v1Block[1] = '}';
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(1, failure.getSuppressed().length);
 	}
 
 	@Test
