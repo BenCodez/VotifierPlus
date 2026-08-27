@@ -10,6 +10,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyPair;
@@ -235,6 +237,30 @@ public class VoteReceiverTest {
 	}
 
 	@Test
+	public void testInvalidFramedV2CollisionGraceIsBounded() throws Exception {
+		byte[] framedPayload = frameV2Payload(
+				"{\"signature\":\"dummySignature\"}".getBytes(StandardCharsets.UTF_8));
+
+		try (ServerSocket server = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", server.getLocalPort());
+				Socket accepted = server.accept();
+				PushbackInputStream in = new PushbackInputStream(accepted.getInputStream(), 512)) {
+			accepted.setSoTimeout(5000);
+			client.getOutputStream().write(framedPayload);
+			client.getOutputStream().flush();
+
+			VoteProtocolVersion version = parser.detectVersion(in);
+			long startedAt = System.nanoTime();
+			assertThrows(InvalidVoteException.class, () -> parser.parse(in, version, receiver, "test-address",
+					receiver.getChallenge(), accepted));
+			long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+
+			assertTrue(elapsedMillis < 1500,
+					"Invalid framed V2 packet exceeded bounded collision grace: " + elapsedMillis + "ms");
+		}
+	}
+
+	@Test
 	public void testV1MagicPrefixCollisionAttemptsV1Fallback() throws Exception {
 		byte[] v1Block = new byte[256];
 		v1Block[0] = 0x73;
@@ -276,6 +302,42 @@ public class VoteReceiverTest {
 		Exception failure = assertThrows(Exception.class,
 				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
 		assertEquals(1, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testDelayedV1MagicCollisionRemainderUsesBoundedGraceRead() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = 0x73;
+		v1Block[1] = 0x3A;
+		v1Block[2] = 0;
+		v1Block[3] = 64;
+		v1Block[4] = '{';
+		v1Block[5] = '}';
+
+		try (ServerSocket server = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", server.getLocalPort());
+				Socket accepted = server.accept();
+				PushbackInputStream in = new PushbackInputStream(accepted.getInputStream(), 512)) {
+			client.getOutputStream().write(v1Block, 0, 68);
+			client.getOutputStream().flush();
+
+			Thread remainderWriter = new Thread(() -> {
+				try {
+					Thread.sleep(50);
+					client.getOutputStream().write(v1Block, 68, v1Block.length - 68);
+					client.getOutputStream().flush();
+				} catch (Exception ex) {
+					throw new RuntimeException(ex);
+				}
+			});
+			remainderWriter.start();
+
+			VoteProtocolVersion version = parser.detectVersion(in);
+			Exception failure = assertThrows(Exception.class, () -> parser.parse(in, version, receiver,
+					"test-address", receiver.getChallenge(), accepted));
+			remainderWriter.join();
+			assertEquals(1, failure.getSuppressed().length);
+		}
 	}
 
 	@Test
