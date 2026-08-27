@@ -248,14 +248,27 @@ public class VoteReceiverTest {
 			accepted.setSoTimeout(5000);
 			client.getOutputStream().write(framedPayload);
 			client.getOutputStream().flush();
+			Thread trickleWriter = new Thread(() -> {
+				try {
+					for (int i = 0; i < 3; i++) {
+						Thread.sleep(100);
+						client.getOutputStream().write(1);
+						client.getOutputStream().flush();
+					}
+				} catch (Exception ex) {
+					throw new RuntimeException(ex);
+				}
+			});
+			trickleWriter.start();
 
 			VoteProtocolVersion version = parser.detectVersion(in);
 			long startedAt = System.nanoTime();
 			assertThrows(InvalidVoteException.class, () -> parser.parse(in, version, receiver, "test-address",
 					receiver.getChallenge(), accepted));
 			long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+			trickleWriter.join();
 
-			assertTrue(elapsedMillis < 1500,
+			assertTrue(elapsedMillis < 1000,
 					"Invalid framed V2 packet exceeded bounded collision grace: " + elapsedMillis + "ms");
 		}
 	}
@@ -364,6 +377,24 @@ public class VoteReceiverTest {
 		byte[] v1Block = new byte[256];
 		v1Block[0] = '{';
 		v1Block[1] = '}';
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(1, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testV1JsonPrefixBulkReadPreservesSuffixForFallback() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = '{';
+		v1Block[1] = '"';
+		v1Block[2] = 'a';
+		v1Block[3] = '"';
+		v1Block[4] = '}';
 
 		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
 
