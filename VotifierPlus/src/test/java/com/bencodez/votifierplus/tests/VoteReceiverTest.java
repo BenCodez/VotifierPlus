@@ -10,6 +10,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyPair;
@@ -76,6 +78,7 @@ public class VoteReceiverTest {
 	private static class TestVoteReceiver extends VoteReceiver {
 
 		private final String testChallenge = "testChallenge";
+		private boolean disableV1;
 
 		public TestVoteReceiver(String host, int port) throws Exception {
 			super(host, port);
@@ -84,6 +87,15 @@ public class VoteReceiverTest {
 		@Override
 		public boolean isUseTokens() {
 			return false;
+		}
+
+		@Override
+		public boolean isDisableV1() {
+			return disableV1;
+		}
+
+		public void setDisableV1(boolean disableV1) {
+			this.disableV1 = disableV1;
 		}
 
 		@Override
@@ -148,10 +160,9 @@ public class VoteReceiverTest {
 
 	@Test
 	public void testDetectV1VoteProtocol() throws Exception {
-		String voteMsg = "VOTE\nvotifier.bencodez.com\ntestUser\n127.0.0.1\nTestTimestamp\n";
-		Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-		cipher.init(Cipher.ENCRYPT_MODE, testKeyPair.getPublic());
-		byte[] encrypted = cipher.doFinal(voteMsg.getBytes(StandardCharsets.UTF_8));
+		byte[] encrypted = new byte[256];
+		encrypted[0] = 1;
+		encrypted[1] = 2;
 
 		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(encrypted), 512);
 		VoteProtocolVersion version = parser.detectVersion(in);
@@ -187,26 +198,217 @@ public class VoteReceiverTest {
 	}
 
 	@Test
-	public void testParseV2Vote() throws Exception {
-		JsonObject inner = new JsonObject();
-		inner.addProperty("serviceName", "votifier.bencodez.com");
-		inner.addProperty("username", "testUserV2");
-		inner.addProperty("address", "127.0.0.1");
-		inner.addProperty("timestamp", "TestTimestampV2");
-		inner.addProperty("challenge", "testChallenge");
-		String payload = inner.toString();
-
-		Mac mac = Mac.getInstance("HmacSHA256");
-		mac.init(dummyTokenKey);
-		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
-		String signature = Base64.getEncoder().encodeToString(signatureBytes);
-
-		JsonObject outer = new JsonObject();
-		outer.addProperty("payload", payload);
-		outer.addProperty("signature", signature);
+	public void testDetectFramedV2VoteProtocol() throws Exception {
+		byte[] jsonPayload = " \r\n{\"payload\":\"{}\",\"signature\":\"dGVzdA==\"}".getBytes(StandardCharsets.UTF_8);
 
 		PushbackInputStream in = new PushbackInputStream(
-				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
+				new ByteArrayInputStream(frameV2Payload(jsonPayload)), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+	}
+
+	@Test
+	public void testCompleteInvalidFramedV2DoesNotReadPastDeclaredLength() throws Exception {
+		byte[] jsonPayload = "{\"signature\":\"dummySignature\"}".getBytes(StandardCharsets.UTF_8);
+		byte[] framedPayload = frameV2Payload(jsonPayload);
+		ByteArrayInputStream boundaryChecked = new ByteArrayInputStream(framedPayload) {
+			@Override
+			public synchronized int read() {
+				if (pos >= count) {
+					throw new AssertionError("Parser read past the declared V2 frame boundary");
+				}
+				return super.read();
+			}
+
+			@Override
+			public synchronized int read(byte[] bytes, int offset, int length) {
+				if (pos >= count) {
+					throw new AssertionError("Parser read past the declared V2 frame boundary");
+				}
+				return super.read(bytes, offset, length);
+			}
+		};
+		PushbackInputStream in = new PushbackInputStream(boundaryChecked, 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertThrows(InvalidVoteException.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+	}
+
+	@Test
+	public void testInvalidFramedV2CollisionGraceIsBounded() throws Exception {
+		byte[] framedPayload = frameV2Payload(
+				"{\"signature\":\"dummySignature\"}".getBytes(StandardCharsets.UTF_8));
+
+		try (ServerSocket server = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", server.getLocalPort());
+				Socket accepted = server.accept();
+				PushbackInputStream in = new PushbackInputStream(accepted.getInputStream(), 512)) {
+			accepted.setSoTimeout(5000);
+			client.getOutputStream().write(framedPayload);
+			client.getOutputStream().flush();
+			Thread trickleWriter = new Thread(() -> {
+				try {
+					for (int i = 0; i < 3; i++) {
+						Thread.sleep(100);
+						client.getOutputStream().write(1);
+						client.getOutputStream().flush();
+					}
+				} catch (Exception ex) {
+					throw new RuntimeException(ex);
+				}
+			});
+			trickleWriter.start();
+
+			VoteProtocolVersion version = parser.detectVersion(in);
+			long startedAt = System.nanoTime();
+			assertThrows(InvalidVoteException.class, () -> parser.parse(in, version, receiver, "test-address",
+					receiver.getChallenge(), accepted));
+			long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+			trickleWriter.join();
+
+			assertTrue(elapsedMillis < 1000,
+					"Invalid framed V2 packet exceeded bounded collision grace: " + elapsedMillis + "ms");
+		}
+	}
+
+	@Test
+	public void testV1MagicPrefixCollisionAttemptsV1Fallback() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = 0x73;
+		v1Block[1] = 0x3A;
+		v1Block[2] = 0;
+		v1Block[3] = 64;
+		v1Block[4] = '{';
+		v1Block[5] = '}';
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(1, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testFragmentedV1MagicPrefixCollisionAttemptsV1Fallback() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = 0x73;
+		v1Block[1] = 0x3A;
+		v1Block[2] = 0;
+		v1Block[3] = 64;
+		v1Block[4] = '{';
+		v1Block[5] = '}';
+
+		ByteArrayInputStream fragmented = new ByteArrayInputStream(v1Block) {
+			@Override
+			public synchronized int available() {
+				return pos <= 2 ? 0 : super.available();
+			}
+		};
+		PushbackInputStream in = new PushbackInputStream(fragmented, 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(1, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testDelayedV1MagicCollisionRemainderUsesBoundedGraceRead() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = 0x73;
+		v1Block[1] = 0x3A;
+		v1Block[2] = 0;
+		v1Block[3] = 64;
+		v1Block[4] = '{';
+		v1Block[5] = '}';
+
+		try (ServerSocket server = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", server.getLocalPort());
+				Socket accepted = server.accept();
+				PushbackInputStream in = new PushbackInputStream(accepted.getInputStream(), 512)) {
+			client.getOutputStream().write(v1Block, 0, 68);
+			client.getOutputStream().flush();
+
+			Thread remainderWriter = new Thread(() -> {
+				try {
+					Thread.sleep(50);
+					client.getOutputStream().write(v1Block, 68, v1Block.length - 68);
+					client.getOutputStream().flush();
+				} catch (Exception ex) {
+					throw new RuntimeException(ex);
+				}
+			});
+			remainderWriter.start();
+
+			VoteProtocolVersion version = parser.detectVersion(in);
+			Exception failure = assertThrows(Exception.class, () -> parser.parse(in, version, receiver,
+					"test-address", receiver.getChallenge(), accepted));
+			remainderWriter.join();
+			assertEquals(1, failure.getSuppressed().length);
+		}
+	}
+
+	@Test
+	public void testV1MagicPrefixCollisionDoesNotFallbackWhenV1IsDisabled() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = 0x73;
+		v1Block[1] = 0x3A;
+		v1Block[2] = 0;
+		v1Block[3] = 64;
+		v1Block[4] = '{';
+		v1Block[5] = '}';
+		receiver.setDisableV1(true);
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(0, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testV1JsonPrefixCollisionAttemptsV1Fallback() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = '{';
+		v1Block[1] = '}';
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(1, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testV1JsonPrefixBulkReadPreservesSuffixForFallback() throws Exception {
+		byte[] v1Block = new byte[256];
+		v1Block[0] = '{';
+		v1Block[1] = '"';
+		v1Block[2] = 'a';
+		v1Block[3] = '"';
+		v1Block[4] = '}';
+
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(v1Block), 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertEquals(VoteProtocolVersion.V2, version);
+		Exception failure = assertThrows(Exception.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
+		assertEquals(1, failure.getSuppressed().length);
+	}
+
+	@Test
+	public void testParseV2Vote() throws Exception {
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(createSignedV2Payload("testUserV2")), 512);
 
 		VoteRequest request = parser.parse(in, VoteProtocolVersion.V2, receiver, "test-address", receiver.getChallenge());
 
@@ -215,6 +417,23 @@ public class VoteReceiverTest {
 		assertEquals("testUserV2", request.getUsername());
 		assertEquals("127.0.0.1", request.getAddress());
 		assertEquals("TestTimestampV2", request.getTimeStamp());
+	}
+
+	@Test
+	public void testParseByteFragmentedFramedV2Vote() throws Exception {
+		byte[] framedPayload = frameV2Payload(createSignedV2Payload("fragmentedUser"));
+		ByteArrayInputStream fragmented = new ByteArrayInputStream(framedPayload) {
+			@Override
+			public synchronized int read(byte[] bytes, int offset, int length) {
+				return super.read(bytes, offset, Math.min(1, length));
+			}
+		};
+		PushbackInputStream in = new PushbackInputStream(fragmented, 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		VoteRequest request = parser.parse(in, version, receiver, "test-address", receiver.getChallenge());
+
+		assertEquals("fragmentedUser", request.getUsername());
 	}
 
 	@Test
@@ -419,5 +638,35 @@ public class VoteReceiverTest {
 		assertEquals("127.0.0.1", vote.getAddress());
 		assertEquals("TestTimestamp", vote.getTimeStamp());
 		assertEquals("192.168.1.1", vote.getSourceAddress());
+	}
+
+	private byte[] createSignedV2Payload(String username) throws Exception {
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", username);
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestampV2");
+		inner.addProperty("challenge", "testChallenge");
+		String payload = inner.toString();
+
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		String signature = Base64.getEncoder()
+				.encodeToString(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+		return outer.toString().getBytes(StandardCharsets.UTF_8);
+	}
+
+	private byte[] frameV2Payload(byte[] jsonPayload) throws Exception {
+		ByteArrayOutputStream framedPayload = new ByteArrayOutputStream();
+		framedPayload.write(0x73);
+		framedPayload.write(0x3A);
+		framedPayload.write((jsonPayload.length >>> 8) & 0xFF);
+		framedPayload.write(jsonPayload.length & 0xFF);
+		framedPayload.write(jsonPayload);
+		return framedPayload.toByteArray();
 	}
 }
