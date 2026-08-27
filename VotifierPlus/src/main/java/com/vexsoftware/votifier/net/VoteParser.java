@@ -6,6 +6,7 @@
  */
 package com.vexsoftware.votifier.net;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PushbackInputStream;
 import java.nio.charset.StandardCharsets;
@@ -29,7 +30,8 @@ public class VoteParser {
 
 	private static final Gson GSON = new Gson();
 	private static final short PROTOCOL_2_MAGIC = (short) 0x733A;
-	private static final int PROTOCOL_2_PREFIX_BYTES = 5;
+	private static final int PROTOCOL_VERSION_PREFIX_BYTES = 2;
+	private static final int V1_BLOCK_BYTES = 256;
 
 	private static final String FIELD_PAYLOAD = "payload";
 	private static final String FIELD_SIGNATURE = "signature";
@@ -48,7 +50,7 @@ public class VoteParser {
 	 * @throws Exception if there is not enough data to determine the protocol
 	 */
 	public VoteProtocolVersion detectVersion(PushbackInputStream in) throws Exception {
-		byte[] header = new byte[PROTOCOL_2_PREFIX_BYTES];
+		byte[] header = new byte[PROTOCOL_VERSION_PREFIX_BYTES];
 		int bytesRead = 0;
 		while (bytesRead < header.length) {
 			int read = in.read(header, bytesRead, header.length - bytesRead);
@@ -69,9 +71,7 @@ public class VoteParser {
 		}
 
 		short magic = (short) (((header[0] & 0xFF) << 8) | (header[1] & 0xFF));
-		int payloadLength = ((header[2] & 0xFF) << 8) | (header[3] & 0xFF);
-		if (bytesRead == PROTOCOL_2_PREFIX_BYTES && magic == PROTOCOL_2_MAGIC && payloadLength > 0
-				&& header[4] == '{') {
+		if (magic == PROTOCOL_2_MAGIC) {
 			return VoteProtocolVersion.V2;
 		}
 
@@ -94,11 +94,25 @@ public class VoteParser {
 		if (version == VoteProtocolVersion.V1) {
 			return parseV1(in, receiver, address);
 		}
-		return parseV2(in, receiver, address, challenge);
+
+		byte[] voteData = readVoteData(in);
+		try {
+			return parseV2(voteData, receiver, address, challenge);
+		} catch (Exception v2Failure) {
+			if (!receiver.isDisableV1() && voteData.length == V1_BLOCK_BYTES) {
+				try {
+					return parseV1(new PushbackInputStream(new ByteArrayInputStream(voteData), V1_BLOCK_BYTES), receiver,
+							address);
+				} catch (Exception v1Failure) {
+					v2Failure.addSuppressed(v1Failure);
+				}
+			}
+			throw v2Failure;
+		}
 	}
 
 	private VoteRequest parseV1(PushbackInputStream in, VoteReceiver receiver, String address) throws Exception {
-		byte[] block = new byte[256];
+		byte[] block = new byte[V1_BLOCK_BYTES];
 		int totalRead = 0;
 
 		while (totalRead < block.length) {
@@ -109,9 +123,9 @@ public class VoteParser {
 			totalRead += read;
 		}
 
-		if (totalRead != 256) {
+		if (totalRead != V1_BLOCK_BYTES) {
 			throw new InvalidVoteException("Failed to read complete V1 vote block from " + address
-					+ " (expected 256 bytes, got " + totalRead + ")");
+					+ " (expected " + V1_BLOCK_BYTES + " bytes, got " + totalRead + ")");
 		}
 
 		byte[] decrypted;
@@ -151,8 +165,7 @@ public class VoteParser {
 		return request;
 	}
 
-	private VoteRequest parseV2(PushbackInputStream in, VoteReceiver receiver, String address, String challenge)
-			throws Exception {
+	private byte[] readVoteData(PushbackInputStream in) throws Exception {
 		ByteArrayOutputStream data = new ByteArrayOutputStream();
 		int b;
 		while ((b = in.read()) != -1) {
@@ -161,8 +174,12 @@ public class VoteParser {
 				break;
 			}
 		}
+		return data.toByteArray();
+	}
 
-		String voteData = data.toString("UTF-8").trim();
+	private VoteRequest parseV2(byte[] data, VoteReceiver receiver, String address, String challenge)
+			throws Exception {
+		String voteData = new String(data, StandardCharsets.UTF_8).trim();
 		receiver.debug("Received raw V2 vote payload: [" + voteData + "]");
 
 		int firstBrace = voteData.indexOf('{');
