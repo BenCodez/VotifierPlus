@@ -9,6 +9,7 @@ package com.vexsoftware.votifier.net;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PushbackInputStream;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.util.Base64;
@@ -32,6 +33,7 @@ public class VoteParser {
 	private static final short PROTOCOL_2_MAGIC = (short) 0x733A;
 	private static final int PROTOCOL_VERSION_PREFIX_BYTES = 2;
 	private static final int V1_BLOCK_BYTES = 256;
+	private static final int MAX_V2_PACKET_BYTES = 4 + 0xFFFF;
 
 	private static final String FIELD_PAYLOAD = "payload";
 	private static final String FIELD_SIGNATURE = "signature";
@@ -95,19 +97,41 @@ public class VoteParser {
 			return parseV1(in, receiver, address);
 		}
 
-		byte[] voteData = readVoteData(in);
-		try {
-			return parseV2(voteData, receiver, address, challenge);
-		} catch (Exception v2Failure) {
-			if (!receiver.isDisableV1() && voteData.length == V1_BLOCK_BYTES) {
+		ByteArrayOutputStream voteData = new ByteArrayOutputStream();
+		readMoreVoteData(in, voteData);
+		boolean v1FallbackAttempted = false;
+
+		while (true) {
+			byte[] candidate = voteData.toByteArray();
+			Exception v2Failure;
+			try {
+				return parseV2(candidate, receiver, address, challenge);
+			} catch (Exception ex) {
+				v2Failure = ex;
+			}
+
+			if (!receiver.isDisableV1() && !v1FallbackAttempted && candidate.length == V1_BLOCK_BYTES) {
+				v1FallbackAttempted = true;
 				try {
-					return parseV1(new PushbackInputStream(new ByteArrayInputStream(voteData), V1_BLOCK_BYTES), receiver,
+					return parseV1(new PushbackInputStream(new ByteArrayInputStream(candidate), V1_BLOCK_BYTES), receiver,
 							address);
 				} catch (Exception v1Failure) {
 					v2Failure.addSuppressed(v1Failure);
 				}
 			}
-			throw v2Failure;
+
+			if (candidate.length >= MAX_V2_PACKET_BYTES) {
+				throw v2Failure;
+			}
+
+			try {
+				if (!readMoreVoteData(in, voteData)) {
+					throw v2Failure;
+				}
+			} catch (SocketTimeoutException ex) {
+				v2Failure.addSuppressed(ex);
+				throw v2Failure;
+			}
 		}
 	}
 
@@ -165,16 +189,21 @@ public class VoteParser {
 		return request;
 	}
 
-	private byte[] readVoteData(PushbackInputStream in) throws Exception {
-		ByteArrayOutputStream data = new ByteArrayOutputStream();
-		int b;
-		while ((b = in.read()) != -1) {
-			data.write(b);
-			if (in.available() == 0) {
+	private boolean readMoreVoteData(PushbackInputStream in, ByteArrayOutputStream data) throws Exception {
+		int next = in.read();
+		if (next == -1) {
+			return false;
+		}
+		data.write(next);
+
+		while (data.size() < MAX_V2_PACKET_BYTES && in.available() > 0) {
+			next = in.read();
+			if (next == -1) {
 				break;
 			}
+			data.write(next);
 		}
-		return data.toByteArray();
+		return true;
 	}
 
 	private VoteRequest parseV2(byte[] data, VoteReceiver receiver, String address, String challenge)
