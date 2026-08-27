@@ -198,18 +198,40 @@ public class VoteReceiverTest {
 	@Test
 	public void testDetectFramedV2VoteProtocol() throws Exception {
 		byte[] jsonPayload = " \r\n{\"payload\":\"{}\",\"signature\":\"dGVzdA==\"}".getBytes(StandardCharsets.UTF_8);
-		ByteArrayOutputStream framedPayload = new ByteArrayOutputStream();
-		framedPayload.write(0x73);
-		framedPayload.write(0x3A);
-		framedPayload.write((jsonPayload.length >>> 8) & 0xFF);
-		framedPayload.write(jsonPayload.length & 0xFF);
-		framedPayload.write(jsonPayload);
 
 		PushbackInputStream in = new PushbackInputStream(
-				new ByteArrayInputStream(framedPayload.toByteArray()), 512);
+				new ByteArrayInputStream(frameV2Payload(jsonPayload)), 512);
 
 		VoteProtocolVersion version = parser.detectVersion(in);
 		assertEquals(VoteProtocolVersion.V2, version);
+	}
+
+	@Test
+	public void testCompleteInvalidFramedV2DoesNotReadPastDeclaredLength() throws Exception {
+		byte[] jsonPayload = "{\"signature\":\"dummySignature\"}".getBytes(StandardCharsets.UTF_8);
+		byte[] framedPayload = frameV2Payload(jsonPayload);
+		ByteArrayInputStream boundaryChecked = new ByteArrayInputStream(framedPayload) {
+			@Override
+			public synchronized int read() {
+				if (pos >= count) {
+					throw new AssertionError("Parser read past the declared V2 frame boundary");
+				}
+				return super.read();
+			}
+
+			@Override
+			public synchronized int read(byte[] bytes, int offset, int length) {
+				if (pos >= count) {
+					throw new AssertionError("Parser read past the declared V2 frame boundary");
+				}
+				return super.read(bytes, offset, length);
+			}
+		};
+		PushbackInputStream in = new PushbackInputStream(boundaryChecked, 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		assertThrows(InvalidVoteException.class,
+				() -> parser.parse(in, version, receiver, "test-address", receiver.getChallenge()));
 	}
 
 	@Test
@@ -292,25 +314,8 @@ public class VoteReceiverTest {
 
 	@Test
 	public void testParseV2Vote() throws Exception {
-		JsonObject inner = new JsonObject();
-		inner.addProperty("serviceName", "votifier.bencodez.com");
-		inner.addProperty("username", "testUserV2");
-		inner.addProperty("address", "127.0.0.1");
-		inner.addProperty("timestamp", "TestTimestampV2");
-		inner.addProperty("challenge", "testChallenge");
-		String payload = inner.toString();
-
-		Mac mac = Mac.getInstance("HmacSHA256");
-		mac.init(dummyTokenKey);
-		byte[] signatureBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
-		String signature = Base64.getEncoder().encodeToString(signatureBytes);
-
-		JsonObject outer = new JsonObject();
-		outer.addProperty("payload", payload);
-		outer.addProperty("signature", signature);
-
 		PushbackInputStream in = new PushbackInputStream(
-				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
+				new ByteArrayInputStream(createSignedV2Payload("testUserV2")), 512);
 
 		VoteRequest request = parser.parse(in, VoteProtocolVersion.V2, receiver, "test-address", receiver.getChallenge());
 
@@ -319,6 +324,23 @@ public class VoteReceiverTest {
 		assertEquals("testUserV2", request.getUsername());
 		assertEquals("127.0.0.1", request.getAddress());
 		assertEquals("TestTimestampV2", request.getTimeStamp());
+	}
+
+	@Test
+	public void testParseByteFragmentedFramedV2Vote() throws Exception {
+		byte[] framedPayload = frameV2Payload(createSignedV2Payload("fragmentedUser"));
+		ByteArrayInputStream fragmented = new ByteArrayInputStream(framedPayload) {
+			@Override
+			public synchronized int read(byte[] bytes, int offset, int length) {
+				return super.read(bytes, offset, Math.min(1, length));
+			}
+		};
+		PushbackInputStream in = new PushbackInputStream(fragmented, 512);
+
+		VoteProtocolVersion version = parser.detectVersion(in);
+		VoteRequest request = parser.parse(in, version, receiver, "test-address", receiver.getChallenge());
+
+		assertEquals("fragmentedUser", request.getUsername());
 	}
 
 	@Test
@@ -523,5 +545,35 @@ public class VoteReceiverTest {
 		assertEquals("127.0.0.1", vote.getAddress());
 		assertEquals("TestTimestamp", vote.getTimeStamp());
 		assertEquals("192.168.1.1", vote.getSourceAddress());
+	}
+
+	private byte[] createSignedV2Payload(String username) throws Exception {
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", username);
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestampV2");
+		inner.addProperty("challenge", "testChallenge");
+		String payload = inner.toString();
+
+		Mac mac = Mac.getInstance("HmacSHA256");
+		mac.init(dummyTokenKey);
+		String signature = Base64.getEncoder()
+				.encodeToString(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
+
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", payload);
+		outer.addProperty("signature", signature);
+		return outer.toString().getBytes(StandardCharsets.UTF_8);
+	}
+
+	private byte[] frameV2Payload(byte[] jsonPayload) throws Exception {
+		ByteArrayOutputStream framedPayload = new ByteArrayOutputStream();
+		framedPayload.write(0x73);
+		framedPayload.write(0x3A);
+		framedPayload.write((jsonPayload.length >>> 8) & 0xFF);
+		framedPayload.write(jsonPayload.length & 0xFF);
+		framedPayload.write(jsonPayload);
+		return framedPayload.toByteArray();
 	}
 }
