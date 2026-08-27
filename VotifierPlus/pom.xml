@@ -122,6 +122,12 @@
                             <groupId>com.velocitypowered</groupId>
                             <artifactId>velocity-api</artifactId>
                             <version>${velocity.version}</version>
+                            <exclusions>
+                                <exclusion>
+                                    <groupId>com.velocitypowered</groupId>
+                                    <artifactId>velocity-brigadier</artifactId>
+                                </exclusion>
+                            </exclusions>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
@@ -243,24 +249,32 @@
     </build>
     <repositories>
         <repository>
+            <id>central</id>
+            <url>https://repo.maven.apache.org/maven2</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
             <id>spigot-repo</id>
             <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
         </repository>
         <repository>
             <id>bencodez repo</id>
             <url>https://nexus.bencodez.com/repository/maven-public/</url>
-        </repository>
-        <repository>
-            <id>bungeecord-repo</id>
-            <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
         </repository>
         <repository>
             <id>papermc</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
-        </repository>
-        <repository>
-            <id>velocity</id>
-            <url>https://nexus.velocitypowered.com/repository/maven-public/</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
         </repository>
     </repositories>
     <dependencies>
@@ -287,6 +301,12 @@
             <artifactId>velocity-api</artifactId>
             <version>${velocity.version}</version>
             <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.velocitypowered</groupId>
+                    <artifactId>velocity-brigadier</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.bstats</groupId>
