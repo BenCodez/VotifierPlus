@@ -9,7 +9,6 @@ package com.vexsoftware.votifier.net;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PushbackInputStream;
-import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.util.Base64;
@@ -98,40 +97,114 @@ public class VoteParser {
 		}
 
 		ByteArrayOutputStream voteData = new ByteArrayOutputStream();
-		readMoreVoteData(in, voteData);
-		boolean v1FallbackAttempted = false;
+		if (!readToSize(in, voteData, PROTOCOL_VERSION_PREFIX_BYTES)) {
+			throw new InvalidVoteException("Incomplete V2 protocol prefix from " + address);
+		}
 
-		while (true) {
-			byte[] candidate = voteData.toByteArray();
-			Exception v2Failure;
+		byte[] prefix = voteData.toByteArray();
+		short magic = (short) (((prefix[0] & 0xFF) << 8) | (prefix[1] & 0xFF));
+		if (magic == PROTOCOL_2_MAGIC) {
+			return parseFramedV2(in, voteData, receiver, address, challenge);
+		}
+		if ((char) prefix[0] == '{') {
+			return parseUnframedV2(in, voteData, receiver, address, challenge);
+		}
+
+		throw new InvalidVoteException("Invalid V2 protocol prefix from " + address);
+	}
+
+	private VoteRequest parseFramedV2(PushbackInputStream in, ByteArrayOutputStream voteData, VoteReceiver receiver,
+			String address, String challenge) throws Exception {
+		if (!readToSize(in, voteData, 4)) {
+			throw new InvalidVoteException("Incomplete V2 frame header from " + address);
+		}
+
+		byte[] header = voteData.toByteArray();
+		int payloadBytes = ((header[2] & 0xFF) << 8) | (header[3] & 0xFF);
+		int frameBytes = 4 + payloadBytes;
+		Exception v1Failure = null;
+
+		// A randomized V1 block can claim a framed length greater than 256. Test
+		// the complete V1-sized prefix before blocking for the rest of that frame.
+		if (frameBytes > V1_BLOCK_BYTES && !receiver.isDisableV1()) {
+			if (!readToSize(in, voteData, V1_BLOCK_BYTES)) {
+				throw new InvalidVoteException("Incomplete V2 frame from " + address + " (expected " + frameBytes
+						+ " bytes, got " + voteData.size() + ")");
+			}
 			try {
-				return parseV2(candidate, receiver, address, challenge);
+				return parseV1Candidate(voteData.toByteArray(), receiver, address);
 			} catch (Exception ex) {
-				v2Failure = ex;
+				v1Failure = ex;
 			}
+		}
 
-			if (!receiver.isDisableV1() && !v1FallbackAttempted && candidate.length == V1_BLOCK_BYTES) {
-				v1FallbackAttempted = true;
+		if (!readToSize(in, voteData, frameBytes)) {
+			throw new InvalidVoteException("Incomplete V2 frame from " + address + " (expected " + frameBytes
+					+ " bytes, got " + voteData.size() + ")");
+		}
+
+		try {
+			return parseV2(voteData.toByteArray(), receiver, address, challenge);
+		} catch (Exception v2Failure) {
+			if (v1Failure != null) {
+				v2Failure.addSuppressed(v1Failure);
+			}
+			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure);
+		}
+	}
+
+	private VoteRequest parseUnframedV2(PushbackInputStream in, ByteArrayOutputStream voteData, VoteReceiver receiver,
+			String address, String challenge) throws Exception {
+		JsonObjectBoundaryScanner scanner = new JsonObjectBoundaryScanner();
+		byte[] prefix = voteData.toByteArray();
+		boolean complete = scanner.scan(prefix, 0, prefix.length) >= 0;
+		Exception v1Failure = null;
+		boolean v1Attempted = false;
+		byte[] buffer = new byte[4096];
+
+		while (!complete) {
+			if (!receiver.isDisableV1() && !v1Attempted && voteData.size() == V1_BLOCK_BYTES) {
+				v1Attempted = true;
 				try {
-					return parseV1(new PushbackInputStream(new ByteArrayInputStream(candidate), V1_BLOCK_BYTES), receiver,
-							address);
-				} catch (Exception v1Failure) {
-					v2Failure.addSuppressed(v1Failure);
+					return parseV1Candidate(voteData.toByteArray(), receiver, address);
+				} catch (Exception ex) {
+					v1Failure = ex;
 				}
 			}
 
-			if (candidate.length >= MAX_V2_PACKET_BYTES) {
-				throw v2Failure;
+			if (voteData.size() >= MAX_V2_PACKET_BYTES) {
+				InvalidVoteException failure = new InvalidVoteException(
+						"V2 JSON payload exceeds maximum size from " + address);
+				if (v1Failure != null) {
+					failure.addSuppressed(v1Failure);
+				}
+				throw failure;
 			}
 
-			try {
-				if (!readMoreVoteData(in, voteData)) {
-					throw v2Failure;
+			int nextBoundary = voteData.size() < V1_BLOCK_BYTES ? V1_BLOCK_BYTES : MAX_V2_PACKET_BYTES;
+			int maxRead = Math.min(buffer.length, nextBoundary - voteData.size());
+			int read = in.read(buffer, 0, maxRead);
+			if (read == -1) {
+				InvalidVoteException failure = new InvalidVoteException("Incomplete V2 JSON payload from " + address);
+				if (v1Failure != null) {
+					failure.addSuppressed(v1Failure);
 				}
-			} catch (SocketTimeoutException ex) {
-				v2Failure.addSuppressed(ex);
-				throw v2Failure;
+				throw failure;
 			}
+
+			int completeAt = scanner.scan(buffer, 0, read);
+			int bytesToKeep = completeAt >= 0 ? completeAt : read;
+			voteData.write(buffer, 0, bytesToKeep);
+			complete = completeAt >= 0;
+		}
+
+		try {
+			return parseV2(voteData.toByteArray(), receiver, address, challenge);
+		} catch (Exception v2Failure) {
+			if (v1Failure != null) {
+				v2Failure.addSuppressed(v1Failure);
+			}
+			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure);
 		}
 	}
 
@@ -189,21 +262,77 @@ public class VoteParser {
 		return request;
 	}
 
-	private boolean readMoreVoteData(PushbackInputStream in, ByteArrayOutputStream data) throws Exception {
-		int next = in.read();
-		if (next == -1) {
-			return false;
-		}
-		data.write(next);
-
-		while (data.size() < MAX_V2_PACKET_BYTES && in.available() > 0) {
-			next = in.read();
-			if (next == -1) {
-				break;
+	private boolean readToSize(PushbackInputStream in, ByteArrayOutputStream data, int targetBytes) throws Exception {
+		byte[] buffer = new byte[Math.min(4096, Math.max(1, targetBytes - data.size()))];
+		while (data.size() < targetBytes) {
+			int read = in.read(buffer, 0, Math.min(buffer.length, targetBytes - data.size()));
+			if (read == -1) {
+				return false;
 			}
-			data.write(next);
+			data.write(buffer, 0, read);
 		}
 		return true;
+	}
+
+	private VoteRequest fallbackToBufferedV1OrThrow(PushbackInputStream in, ByteArrayOutputStream voteData,
+			VoteReceiver receiver, String address, Exception v2Failure) throws Exception {
+		if (receiver.isDisableV1() || voteData.size() > V1_BLOCK_BYTES) {
+			throw v2Failure;
+		}
+
+		int remaining = V1_BLOCK_BYTES - voteData.size();
+		if (remaining > 0) {
+			// Do not hold a connection worker after a complete V2 packet. A colliding
+			// V1 sender has already written the rest of its fixed-size block, so only
+			// consume it when the whole remainder is currently buffered.
+			if (in.available() < remaining || !readToSize(in, voteData, V1_BLOCK_BYTES)) {
+				throw v2Failure;
+			}
+		}
+
+		try {
+			return parseV1Candidate(voteData.toByteArray(), receiver, address);
+		} catch (Exception v1Failure) {
+			v2Failure.addSuppressed(v1Failure);
+			throw v2Failure;
+		}
+	}
+
+	private VoteRequest parseV1Candidate(byte[] candidate, VoteReceiver receiver, String address) throws Exception {
+		return parseV1(new PushbackInputStream(new ByteArrayInputStream(candidate), V1_BLOCK_BYTES), receiver, address);
+	}
+
+	private static class JsonObjectBoundaryScanner {
+		private int depth;
+		private boolean escaped;
+		private boolean inString;
+		private boolean started;
+
+		private int scan(byte[] data, int offset, int length) {
+			for (int i = offset; i < offset + length; i++) {
+				char current = (char) (data[i] & 0xFF);
+				if (inString) {
+					if (escaped) {
+						escaped = false;
+					} else if (current == '\\') {
+						escaped = true;
+					} else if (current == '"') {
+						inString = false;
+					}
+					continue;
+				}
+
+				if (current == '"') {
+					inString = true;
+				} else if (current == '{') {
+					started = true;
+					depth++;
+				} else if (current == '}' && started && --depth == 0) {
+					return i - offset + 1;
+				}
+			}
+			return -1;
+		}
 	}
 
 	private VoteRequest parseV2(byte[] data, VoteReceiver receiver, String address, String challenge)
