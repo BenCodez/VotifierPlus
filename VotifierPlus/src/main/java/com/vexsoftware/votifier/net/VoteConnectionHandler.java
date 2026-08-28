@@ -83,14 +83,7 @@ public class VoteConnectionHandler {
 				return null;
 			}
 
-			VoteProtocolVersion version = voteParser.detectVersion(in);
-			receiver.debug("Detected vote protocol version: " + version);
-
-			if (receiver.isDisableV1() && version == VoteProtocolVersion.V1) {
-				throw new VoteAuthenticationException("Votifier V1 votes are disabled by configuration");
-			}
-
-			VoteRequest request = voteParser.parse(in, version, receiver, address, challenge, accepted);
+			VoteRequest request = voteParser.parse(in, receiver, address, challenge, accepted);
 
 			Vote vote = new Vote();
 			vote.setServiceName(request.getServiceName());
