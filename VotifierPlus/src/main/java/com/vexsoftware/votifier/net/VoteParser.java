@@ -10,6 +10,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PushbackInputStream;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
@@ -36,6 +37,7 @@ public class VoteParser {
 	private static final int PROTOCOL_VERSION_PREFIX_BYTES = 2;
 	private static final int V1_BLOCK_BYTES = 256;
 	private static final int MAX_V2_PACKET_BYTES = 4 + 0xFFFF;
+	private static final int V2_PACKET_READ_TIMEOUT_MS = 5000;
 	private static final int V1_COLLISION_GRACE_TIMEOUT_MS = 250;
 
 	private static final String FIELD_PAYLOAD = "payload";
@@ -100,8 +102,9 @@ public class VoteParser {
 	}
 
 	/**
-	 * Parses a vote payload with access to the connection socket so an ambiguous
-	 * V1 collision can receive a short, bounded TCP-fragment grace period.
+	 * Parses a vote payload with access to the connection socket so V2 reads have
+	 * an absolute deadline and an ambiguous V1 collision can receive a short,
+	 * bounded TCP-fragment grace period.
 	 *
 	 * @param in        the input stream
 	 * @param version   the detected protocol version
@@ -118,26 +121,35 @@ public class VoteParser {
 			return parseV1(in, receiver, address);
 		}
 
-		ByteArrayOutputStream voteData = new ByteArrayOutputStream();
-		if (!readToSize(in, voteData, PROTOCOL_VERSION_PREFIX_BYTES)) {
-			throw new InvalidVoteException("Incomplete V2 protocol prefix from " + address);
-		}
+		int previousTimeout = socket == null ? 0 : socket.getSoTimeout();
+		long deadlineNanos = socket == null ? 0
+				: System.nanoTime() + V2_PACKET_READ_TIMEOUT_MS * 1_000_000L;
+		try {
+			ByteArrayOutputStream voteData = new ByteArrayOutputStream();
+			if (!readToSize(in, voteData, PROTOCOL_VERSION_PREFIX_BYTES, socket, deadlineNanos)) {
+				throw new InvalidVoteException("Incomplete V2 protocol prefix from " + address);
+			}
 
-		byte[] prefix = voteData.toByteArray();
-		short magic = (short) (((prefix[0] & 0xFF) << 8) | (prefix[1] & 0xFF));
-		if (magic == PROTOCOL_2_MAGIC) {
-			return parseFramedV2(in, voteData, receiver, address, challenge, socket);
-		}
-		if ((char) prefix[0] == '{') {
-			return parseUnframedV2(in, voteData, receiver, address, challenge, socket);
-		}
+			byte[] prefix = voteData.toByteArray();
+			short magic = (short) (((prefix[0] & 0xFF) << 8) | (prefix[1] & 0xFF));
+			if (magic == PROTOCOL_2_MAGIC) {
+				return parseFramedV2(in, voteData, receiver, address, challenge, socket, deadlineNanos);
+			}
+			if ((char) prefix[0] == '{') {
+				return parseUnframedV2(in, voteData, receiver, address, challenge, socket, deadlineNanos);
+			}
 
-		throw new InvalidVoteException("Invalid V2 protocol prefix from " + address);
+			throw new InvalidVoteException("Invalid V2 protocol prefix from " + address);
+		} finally {
+			if (socket != null) {
+				socket.setSoTimeout(previousTimeout);
+			}
+		}
 	}
 
 	private VoteRequest parseFramedV2(PushbackInputStream in, ByteArrayOutputStream voteData, VoteReceiver receiver,
-			String address, String challenge, Socket socket) throws Exception {
-		if (!readToSize(in, voteData, 4)) {
+			String address, String challenge, Socket socket, long deadlineNanos) throws Exception {
+		if (!readToSize(in, voteData, 4, socket, deadlineNanos)) {
 			throw new InvalidVoteException("Incomplete V2 frame header from " + address);
 		}
 
@@ -149,7 +161,7 @@ public class VoteParser {
 		// A randomized V1 block can claim a framed length greater than 256. Test
 		// the complete V1-sized prefix before blocking for the rest of that frame.
 		if (frameBytes > V1_BLOCK_BYTES && !receiver.isDisableV1()) {
-			if (!readToSize(in, voteData, V1_BLOCK_BYTES)) {
+			if (!readToSize(in, voteData, V1_BLOCK_BYTES, socket, deadlineNanos)) {
 				throw new InvalidVoteException("Incomplete V2 frame from " + address + " (expected " + frameBytes
 						+ " bytes, got " + voteData.size() + ")");
 			}
@@ -160,7 +172,7 @@ public class VoteParser {
 			}
 		}
 
-		if (!readToSize(in, voteData, frameBytes)) {
+		if (!readToSize(in, voteData, frameBytes, socket, deadlineNanos)) {
 			throw new InvalidVoteException("Incomplete V2 frame from " + address + " (expected " + frameBytes
 					+ " bytes, got " + voteData.size() + ")");
 		}
@@ -171,12 +183,12 @@ public class VoteParser {
 			if (v1Failure != null) {
 				v2Failure.addSuppressed(v1Failure);
 			}
-			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure, socket);
+			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure, socket, deadlineNanos);
 		}
 	}
 
 	private VoteRequest parseUnframedV2(PushbackInputStream in, ByteArrayOutputStream voteData, VoteReceiver receiver,
-			String address, String challenge, Socket socket) throws Exception {
+			String address, String challenge, Socket socket, long deadlineNanos) throws Exception {
 		JsonObjectBoundaryScanner scanner = new JsonObjectBoundaryScanner();
 		byte[] prefix = voteData.toByteArray();
 		int jsonBoundaryBytes = scanner.scan(prefix, 0, prefix.length);
@@ -206,6 +218,7 @@ public class VoteParser {
 
 			int nextBoundary = voteData.size() < V1_BLOCK_BYTES ? V1_BLOCK_BYTES : MAX_V2_PACKET_BYTES;
 			int maxRead = Math.min(buffer.length, nextBoundary - voteData.size());
+			setRemainingTimeout(socket, deadlineNanos);
 			int read = in.read(buffer, 0, maxRead);
 			if (read == -1) {
 				InvalidVoteException failure = new InvalidVoteException("Incomplete V2 JSON payload from " + address);
@@ -234,7 +247,7 @@ public class VoteParser {
 			if (v1Failure != null) {
 				v2Failure.addSuppressed(v1Failure);
 			}
-			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure, socket);
+			return fallbackToBufferedV1OrThrow(in, voteData, receiver, address, v2Failure, socket, deadlineNanos);
 		}
 	}
 
@@ -293,8 +306,14 @@ public class VoteParser {
 	}
 
 	private boolean readToSize(PushbackInputStream in, ByteArrayOutputStream data, int targetBytes) throws Exception {
+		return readToSize(in, data, targetBytes, null, 0);
+	}
+
+	private boolean readToSize(PushbackInputStream in, ByteArrayOutputStream data, int targetBytes, Socket socket,
+			long deadlineNanos) throws Exception {
 		byte[] buffer = new byte[Math.min(4096, Math.max(1, targetBytes - data.size()))];
 		while (data.size() < targetBytes) {
+			setRemainingTimeout(socket, deadlineNanos);
 			int read = in.read(buffer, 0, Math.min(buffer.length, targetBytes - data.size()));
 			if (read == -1) {
 				return false;
@@ -304,8 +323,23 @@ public class VoteParser {
 		return true;
 	}
 
+	private void setRemainingTimeout(Socket socket, long deadlineNanos) throws SocketException, SocketTimeoutException {
+		if (socket == null) {
+			return;
+		}
+
+		long remainingNanos = deadlineNanos - System.nanoTime();
+		if (remainingNanos <= 0) {
+			throw new SocketTimeoutException("V2 packet read deadline exceeded");
+		}
+
+		int remainingMillis = (int) Math.max(1, (remainingNanos + 999_999L) / 1_000_000L);
+		int currentTimeout = socket.getSoTimeout();
+		socket.setSoTimeout(currentTimeout <= 0 ? remainingMillis : Math.min(currentTimeout, remainingMillis));
+	}
+
 	private VoteRequest fallbackToBufferedV1OrThrow(PushbackInputStream in, ByteArrayOutputStream voteData,
-			VoteReceiver receiver, String address, Exception v2Failure, Socket socket) throws Exception {
+			VoteReceiver receiver, String address, Exception v2Failure, Socket socket, long deadlineNanos) throws Exception {
 		if (receiver.isDisableV1() || voteData.size() > V1_BLOCK_BYTES) {
 			throw v2Failure;
 		}
@@ -316,7 +350,7 @@ public class VoteParser {
 				if (in.available() < remaining || !readToSize(in, voteData, V1_BLOCK_BYTES)) {
 					throw v2Failure;
 				}
-			} else if (!readV1CollisionRemainder(in, voteData, socket, v2Failure)) {
+			} else if (!readV1CollisionRemainder(in, voteData, socket, v2Failure, deadlineNanos)) {
 				throw v2Failure;
 			}
 		}
@@ -330,9 +364,12 @@ public class VoteParser {
 	}
 
 	private boolean readV1CollisionRemainder(PushbackInputStream in, ByteArrayOutputStream voteData, Socket socket,
-			Exception v2Failure) throws Exception {
+			Exception v2Failure, long v2DeadlineNanos) throws Exception {
 		int previousTimeout = socket.getSoTimeout();
 		long deadlineNanos = System.nanoTime() + V1_COLLISION_GRACE_TIMEOUT_MS * 1_000_000L;
+		if (v2DeadlineNanos > 0) {
+			deadlineNanos = Math.min(deadlineNanos, v2DeadlineNanos);
+		}
 		byte[] buffer = new byte[V1_BLOCK_BYTES - voteData.size()];
 		try {
 			while (voteData.size() < V1_BLOCK_BYTES) {

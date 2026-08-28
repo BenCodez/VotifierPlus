@@ -12,6 +12,7 @@ import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyPair;
@@ -271,6 +272,16 @@ public class VoteReceiverTest {
 			assertTrue(elapsedMillis < 1000,
 					"Invalid framed V2 packet exceeded bounded collision grace: " + elapsedMillis + "ms");
 		}
+	}
+
+	@Test
+	public void testIncompleteUnframedV2TrickleHasTotalDeadline() throws Exception {
+		assertV2TrickleHasTotalDeadline("{{".getBytes(StandardCharsets.UTF_8), '{');
+	}
+
+	@Test
+	public void testIncompleteFramedV2TrickleHasTotalDeadline() throws Exception {
+		assertV2TrickleHasTotalDeadline(new byte[] { 0x73, 0x3A, 0, (byte) 128 }, '{');
 	}
 
 	@Test
@@ -658,6 +669,48 @@ public class VoteReceiverTest {
 		outer.addProperty("payload", payload);
 		outer.addProperty("signature", signature);
 		return outer.toString().getBytes(StandardCharsets.UTF_8);
+	}
+
+	private void assertV2TrickleHasTotalDeadline(byte[] initialPayload, int trickleByte) throws Exception {
+		try (ServerSocket server = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", server.getLocalPort());
+				Socket accepted = server.accept();
+				PushbackInputStream in = new PushbackInputStream(accepted.getInputStream(), 512)) {
+			accepted.setSoTimeout(5000);
+			client.getOutputStream().write(initialPayload);
+			client.getOutputStream().flush();
+
+			Thread trickleWriter = new Thread(() -> {
+				try {
+					while (!Thread.currentThread().isInterrupted()) {
+						Thread.sleep(750);
+						client.getOutputStream().write(trickleByte);
+						client.getOutputStream().flush();
+					}
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+				} catch (Exception ex) {
+					throw new RuntimeException(ex);
+				}
+			}, "V2-Trickle-Writer");
+			trickleWriter.setDaemon(true);
+			trickleWriter.start();
+
+			try {
+				VoteProtocolVersion version = parser.detectVersion(in);
+				long startedAt = System.nanoTime();
+				assertThrows(SocketTimeoutException.class, () -> parser.parse(in, version, receiver, "test-address",
+						receiver.getChallenge(), accepted));
+				long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+
+				assertTrue(elapsedMillis >= 4000, "V2 packet deadline fired prematurely: " + elapsedMillis + "ms");
+				assertTrue(elapsedMillis < 7000, "V2 packet trickle reset the total deadline: " + elapsedMillis + "ms");
+				assertEquals(5000, accepted.getSoTimeout());
+			} finally {
+				trickleWriter.interrupt();
+				trickleWriter.join(1000);
+			}
+		}
 	}
 
 	private byte[] frameV2Payload(byte[] jsonPayload) throws Exception {
