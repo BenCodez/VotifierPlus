@@ -57,9 +57,15 @@ public class VoteParser {
 	 * @throws Exception if there is not enough data to determine the protocol
 	 */
 	public VoteProtocolVersion detectVersion(PushbackInputStream in) throws Exception {
+		return detectVersion(in, null, 0);
+	}
+
+	private VoteProtocolVersion detectVersion(PushbackInputStream in, Socket socket, long deadlineNanos)
+			throws Exception {
 		byte[] header = new byte[PROTOCOL_VERSION_PREFIX_BYTES];
 		int bytesRead = 0;
 		while (bytesRead < header.length) {
+			setRemainingTimeout(socket, deadlineNanos);
 			int read = in.read(header, bytesRead, header.length - bytesRead);
 			if (read == -1) {
 				break;
@@ -83,6 +89,35 @@ public class VoteParser {
 		}
 
 		return VoteProtocolVersion.V1;
+	}
+
+	/**
+	 * Detects and parses a network vote under one packet-read deadline.
+	 *
+	 * @param in        the input stream
+	 * @param receiver  the vote receiver
+	 * @param address   remote address string for logging/errors
+	 * @param challenge expected challenge for V2
+	 * @param socket    accepted connection socket
+	 * @return parsed vote request data
+	 * @throws Exception on protocol detection, parsing, validation, or authentication errors
+	 */
+	public VoteRequest parse(PushbackInputStream in, VoteReceiver receiver, String address, String challenge,
+			Socket socket) throws Exception {
+		int previousTimeout = socket.getSoTimeout();
+		long deadlineNanos = System.nanoTime() + V2_PACKET_READ_TIMEOUT_MS * 1_000_000L;
+		try {
+			VoteProtocolVersion version = detectVersion(in, socket, deadlineNanos);
+			receiver.debug("Detected vote protocol version: " + version);
+
+			if (receiver.isDisableV1() && version == VoteProtocolVersion.V1) {
+				throw new VoteAuthenticationException("Votifier V1 votes are disabled by configuration");
+			}
+
+			return parseWithDeadline(in, version, receiver, address, challenge, socket, deadlineNanos);
+		} finally {
+			socket.setSoTimeout(previousTimeout);
+		}
 	}
 
 	/**
@@ -125,26 +160,35 @@ public class VoteParser {
 		long deadlineNanos = socket == null ? 0
 				: System.nanoTime() + V2_PACKET_READ_TIMEOUT_MS * 1_000_000L;
 		try {
-			ByteArrayOutputStream voteData = new ByteArrayOutputStream();
-			if (!readToSize(in, voteData, PROTOCOL_VERSION_PREFIX_BYTES, socket, deadlineNanos)) {
-				throw new InvalidVoteException("Incomplete V2 protocol prefix from " + address);
-			}
-
-			byte[] prefix = voteData.toByteArray();
-			short magic = (short) (((prefix[0] & 0xFF) << 8) | (prefix[1] & 0xFF));
-			if (magic == PROTOCOL_2_MAGIC) {
-				return parseFramedV2(in, voteData, receiver, address, challenge, socket, deadlineNanos);
-			}
-			if ((char) prefix[0] == '{') {
-				return parseUnframedV2(in, voteData, receiver, address, challenge, socket, deadlineNanos);
-			}
-
-			throw new InvalidVoteException("Invalid V2 protocol prefix from " + address);
+			return parseWithDeadline(in, version, receiver, address, challenge, socket, deadlineNanos);
 		} finally {
 			if (socket != null) {
 				socket.setSoTimeout(previousTimeout);
 			}
 		}
+	}
+
+	private VoteRequest parseWithDeadline(PushbackInputStream in, VoteProtocolVersion version, VoteReceiver receiver,
+			String address, String challenge, Socket socket, long deadlineNanos) throws Exception {
+		if (version == VoteProtocolVersion.V1) {
+			return parseV1(in, receiver, address);
+		}
+
+		ByteArrayOutputStream voteData = new ByteArrayOutputStream();
+		if (!readToSize(in, voteData, PROTOCOL_VERSION_PREFIX_BYTES, socket, deadlineNanos)) {
+			throw new InvalidVoteException("Incomplete V2 protocol prefix from " + address);
+		}
+
+		byte[] prefix = voteData.toByteArray();
+		short magic = (short) (((prefix[0] & 0xFF) << 8) | (prefix[1] & 0xFF));
+		if (magic == PROTOCOL_2_MAGIC) {
+			return parseFramedV2(in, voteData, receiver, address, challenge, socket, deadlineNanos);
+		}
+		if ((char) prefix[0] == '{') {
+			return parseUnframedV2(in, voteData, receiver, address, challenge, socket, deadlineNanos);
+		}
+
+		throw new InvalidVoteException("Invalid V2 protocol prefix from " + address);
 	}
 
 	private VoteRequest parseFramedV2(PushbackInputStream in, ByteArrayOutputStream voteData, VoteReceiver receiver,

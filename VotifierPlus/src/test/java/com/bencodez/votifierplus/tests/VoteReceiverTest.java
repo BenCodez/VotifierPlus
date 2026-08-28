@@ -275,13 +275,13 @@ public class VoteReceiverTest {
 	}
 
 	@Test
-	public void testIncompleteUnframedV2TrickleHasTotalDeadline() throws Exception {
-		assertV2TrickleHasTotalDeadline("{{".getBytes(StandardCharsets.UTF_8), '{');
+	public void testIncompleteUnframedV2PrefixAndBodyShareTotalDeadline() throws Exception {
+		assertV2TrickleHasTotalDeadline(new byte[] { '{' }, '{', 3000);
 	}
 
 	@Test
 	public void testIncompleteFramedV2TrickleHasTotalDeadline() throws Exception {
-		assertV2TrickleHasTotalDeadline(new byte[] { 0x73, 0x3A, 0, (byte) 128 }, '{');
+		assertV2TrickleHasTotalDeadline(new byte[] { 0x73, 0x3A, 0, (byte) 128 }, '{', 750);
 	}
 
 	@Test
@@ -671,7 +671,8 @@ public class VoteReceiverTest {
 		return outer.toString().getBytes(StandardCharsets.UTF_8);
 	}
 
-	private void assertV2TrickleHasTotalDeadline(byte[] initialPayload, int trickleByte) throws Exception {
+	private void assertV2TrickleHasTotalDeadline(byte[] initialPayload, int trickleByte, long firstWriteDelayMillis)
+			throws Exception {
 		try (ServerSocket server = new ServerSocket(0);
 				Socket client = new Socket("127.0.0.1", server.getLocalPort());
 				Socket accepted = server.accept();
@@ -682,10 +683,12 @@ public class VoteReceiverTest {
 
 			Thread trickleWriter = new Thread(() -> {
 				try {
+					long writeDelayMillis = firstWriteDelayMillis;
 					while (!Thread.currentThread().isInterrupted()) {
-						Thread.sleep(750);
+						Thread.sleep(writeDelayMillis);
 						client.getOutputStream().write(trickleByte);
 						client.getOutputStream().flush();
+						writeDelayMillis = 750;
 					}
 				} catch (InterruptedException ex) {
 					Thread.currentThread().interrupt();
@@ -697,10 +700,9 @@ public class VoteReceiverTest {
 			trickleWriter.start();
 
 			try {
-				VoteProtocolVersion version = parser.detectVersion(in);
 				long startedAt = System.nanoTime();
-				assertThrows(SocketTimeoutException.class, () -> parser.parse(in, version, receiver, "test-address",
-						receiver.getChallenge(), accepted));
+				assertThrows(SocketTimeoutException.class,
+						() -> parser.parse(in, receiver, "test-address", receiver.getChallenge(), accepted));
 				long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
 
 				assertTrue(elapsedMillis >= 4000, "V2 packet deadline fired prematurely: " + elapsedMillis + "ms");
