@@ -57,6 +57,14 @@ public class VoteConnectionHandler {
 			address = accepted.getRemoteSocketAddress() == null ? "/" + remoteIp
 					: accepted.getRemoteSocketAddress().toString();
 
+			throttleKey = "tunnel:" + remoteIp;
+			tunnelMode = throttleService.isTunnelMode(remoteIp);
+			if (throttleService.isBlocked(throttleKey)) {
+				throttleService.logWarning(receiver, "throttle|" + throttleKey,
+						"Votifier rejected a throttled connection from " + remoteIp);
+				return null;
+			}
+
 			receiver.debug("Accepted connection from: " + address);
 			accepted.setSoTimeout(5000);
 
@@ -73,7 +81,6 @@ public class VoteConnectionHandler {
 			realIp = proxyResult.getRealIp();
 
 			realIpKnown = realIp != null && !realIp.isEmpty();
-			tunnelMode = throttleService.isTunnelMode(remoteIp);
 			throttleKey = realIpKnown ? "ip:" + realIp : "tunnel:" + remoteIp;
 
 			if (throttleService.isBlocked(throttleKey)) {
