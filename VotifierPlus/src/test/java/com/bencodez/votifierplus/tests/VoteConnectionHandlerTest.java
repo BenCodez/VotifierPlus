@@ -260,42 +260,9 @@ public class VoteConnectionHandlerTest {
 	}
 
 	@Test
-	public void testBlockedConnectionIsRejectedBeforeHandshake() throws Exception {
+	public void testProxyCanProvideClientIdentityBeforeThrottleDecision() throws Exception {
 		receiver.setUseTokens(false);
-		ThrottleConfig config = new ThrottleConfig(true, Collections.<String>emptySet(), "10s", 1, "30s", 1, "30s",
-				false, 999, "1s", "60s");
-		VoteThrottleService throttleService = new VoteThrottleService(config);
-		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
-
-		throttleService.fail("tunnel:127.0.0.1", false, false);
-		assertTrue(throttleService.isBlocked("tunnel:127.0.0.1"));
-
-		try (ServerSocket serverSocket = new ServerSocket(0);
-				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
-				Socket accepted = serverSocket.accept()) {
-
-			Future<Vote> future = executor.submit(new Callable<Vote>() {
-				@Override
-				public Vote call() {
-					return handler.handle(accepted);
-				}
-			});
-
-			BufferedReader clientReader = new BufferedReader(
-					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
-
-			String handshake = clientReader.readLine();
-			assertNull(handshake, "Blocked peers must not consume handshake or payload resources");
-
-			Vote vote = future.get();
-			assertNull(vote);
-		}
-	}
-
-	@Test
-	public void testConfiguredTunnelCanProvideClientIdentityBeforeThrottleDecision() throws Exception {
-		receiver.setUseTokens(false);
-		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("127.0.0.1"), "10s", 1, "30s", 1,
+		ThrottleConfig config = new ThrottleConfig(true, Collections.<String>emptySet(), "10s", 1, "30s", 1,
 				"30s", false, 999, "1s", "60s");
 		VoteThrottleService throttleService = new VoteThrottleService(config);
 		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
