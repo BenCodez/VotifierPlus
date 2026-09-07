@@ -71,6 +71,9 @@ public class VoteThrottleService {
 
 		long now = System.currentTimeMillis();
 		ThrottleState state = getThrottleState(key);
+		if (state == null) {
+			return;
+		}
 
 		if (now - state.windowStartMs > config.windowMs) {
 			state.windowStartMs = now;
@@ -140,10 +143,12 @@ public class VoteThrottleService {
 	public void logGenericError(String remoteIp, Exception ex) {
 	}
 
-	private ThrottleState getThrottleState(String key) {
+	private synchronized ThrottleState getThrottleState(String key) {
 		ThrottleState state = throttleStates.get(key);
 		if (state == null) {
-			trimThrottleStates(System.currentTimeMillis());
+			if (!trimThrottleStates(System.currentTimeMillis())) {
+				return null;
+			}
 			ThrottleState created = new ThrottleState();
 			created.windowStartMs = System.currentTimeMillis();
 			ThrottleState existing = throttleStates.putIfAbsent(key, created);
@@ -165,9 +170,9 @@ public class VoteThrottleService {
 		removeOneIfFull(logStates);
 	}
 
-	private void trimThrottleStates(long now) {
+	private boolean trimThrottleStates(long now) {
 		if (throttleStates.size() < MAX_TRACKED_KEYS) {
-			return;
+			return true;
 		}
 		for (java.util.Map.Entry<String, ThrottleState> entry : throttleStates.entrySet()) {
 			ThrottleState state = entry.getValue();
@@ -176,7 +181,17 @@ public class VoteThrottleService {
 				throttleStates.remove(entry.getKey(), state);
 			}
 		}
-		removeOneIfFull(throttleStates);
+		if (throttleStates.size() < MAX_TRACKED_KEYS) {
+			return true;
+		}
+		for (java.util.Map.Entry<String, ThrottleState> entry : throttleStates.entrySet()) {
+			ThrottleState state = entry.getValue();
+			if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
+					&& throttleStates.remove(entry.getKey(), state)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static <T> void removeOneIfFull(ConcurrentHashMap<String, T> states) {
