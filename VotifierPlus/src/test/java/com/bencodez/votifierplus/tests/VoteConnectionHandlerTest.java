@@ -260,7 +260,7 @@ public class VoteConnectionHandlerTest {
 	}
 
 	@Test
-	public void testHandleBlockedConnectionReturnsNull() throws Exception {
+	public void testBlockedConnectionIsRejectedBeforeHandshake() throws Exception {
 		receiver.setUseTokens(false);
 		ThrottleConfig config = new ThrottleConfig(true, Collections.<String>emptySet(), "10s", 1, "30s", 1, "30s",
 				false, 999, "1s", "60s");
@@ -285,7 +285,7 @@ public class VoteConnectionHandlerTest {
 					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
 
 			String handshake = clientReader.readLine();
-			assertEquals("VOTIFIER 1", handshake);
+			assertNull(handshake, "Blocked peers must not consume handshake or payload resources");
 
 			Vote vote = future.get();
 			assertNull(vote);
