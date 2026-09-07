@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Collections;
+	import java.lang.reflect.Field;
+	import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
@@ -164,5 +166,23 @@ public class VoteReceiverThrottleTest {
 
 		assertTrue(service.isTunnelMode("10.0.0.1"));
 		assertFalse(service.isTunnelMode("10.0.0.2"));
+	}
+
+	@Test
+	public void testAttackerControlledKeysAreBounded() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 3, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 5000; i++) {
+			service.fail("ip:" + i, false, true);
+			service.allowLog("log:" + i, "message");
+		}
+		assertTrue(mapSize(service, "throttleStates") <= 4096);
+		assertTrue(mapSize(service, "logStates") <= 4096);
+	}
+
+	private static int mapSize(VoteThrottleService service, String fieldName) throws Exception {
+		Field field = VoteThrottleService.class.getDeclaredField(fieldName);
+		field.setAccessible(true);
+		return ((Map<?, ?>) field.get(service)).size();
 	}
 }
