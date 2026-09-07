@@ -180,9 +180,27 @@ public class VoteReceiverThrottleTest {
 		assertTrue(mapSize(service, "logStates") <= 4096);
 	}
 
+	@Test
+	public void testExistingKeyDoesNotEvictAnotherStateAtCapacity() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, false);
+		}
+		Map<?, ?> states = stateMap(service, "throttleStates");
+		Object existing = states.get("ip:100");
+		service.fail("ip:100", false, false);
+		assertTrue(existing == states.get("ip:100"));
+		assertEquals(4096, states.size());
+	}
+
 	private static int mapSize(VoteThrottleService service, String fieldName) throws Exception {
+		return stateMap(service, fieldName).size();
+	}
+
+	private static Map<?, ?> stateMap(VoteThrottleService service, String fieldName) throws Exception {
 		Field field = VoteThrottleService.class.getDeclaredField(fieldName);
 		field.setAccessible(true);
-		return ((Map<?, ?>) field.get(service)).size();
+		return (Map<?, ?>) field.get(service);
 	}
 }
