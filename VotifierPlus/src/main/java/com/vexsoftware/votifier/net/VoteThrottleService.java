@@ -141,9 +141,9 @@ public class VoteThrottleService {
 	}
 
 	private ThrottleState getThrottleState(String key) {
-		trimThrottleStates(System.currentTimeMillis());
 		ThrottleState state = throttleStates.get(key);
 		if (state == null) {
+			trimThrottleStates(System.currentTimeMillis());
 			ThrottleState created = new ThrottleState();
 			created.windowStartMs = System.currentTimeMillis();
 			ThrottleState existing = throttleStates.putIfAbsent(key, created);
