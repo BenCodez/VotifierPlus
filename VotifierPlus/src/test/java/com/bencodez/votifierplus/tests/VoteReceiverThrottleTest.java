@@ -194,6 +194,20 @@ public class VoteReceiverThrottleTest {
 		assertEquals(4096, states.size());
 	}
 
+	@Test
+	public void testExistingLogKeyDoesNotEvictAnotherStateAtCapacity() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.allowLog("log:" + i, "message");
+		}
+		Map<?, ?> states = stateMap(service, "logStates");
+		Object existing = states.get("log:100");
+		assertNull(service.allowLog("log:100", "message-again"));
+		assertTrue(existing == states.get("log:100"));
+		assertEquals(4096, states.size());
+	}
+
 	private static int mapSize(VoteThrottleService service, String fieldName) throws Exception {
 		return stateMap(service, fieldName).size();
 	}
