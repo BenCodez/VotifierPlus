@@ -208,6 +208,19 @@ public class VoteReceiverThrottleTest {
 		assertEquals(4096, states.size());
 	}
 
+	@Test
+	public void testOverflowDoesNotEvictActiveBan() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 1, "10s", 1, "10s", true, 1, "60s"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, true);
+		}
+		assertTrue(service.isBlocked("ip:100"));
+		service.fail("overflow", false, true);
+		assertTrue(service.isBlocked("ip:100"));
+		assertEquals(4096, mapSize(service, "throttleStates"));
+	}
+
 	private static int mapSize(VoteThrottleService service, String fieldName) throws Exception {
 		return stateMap(service, fieldName).size();
 	}
