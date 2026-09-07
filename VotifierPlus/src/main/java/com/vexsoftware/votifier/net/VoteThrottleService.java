@@ -104,9 +104,9 @@ public class VoteThrottleService {
 		long now = System.currentTimeMillis();
 		long windowMs = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
 
-		trimLogStates(now);
 		LogState state = logStates.get(key);
 		if (state == null) {
+			trimLogStates(now);
 			LogState created = new LogState();
 			LogState existing = logStates.putIfAbsent(key, created);
 			state = existing == null ? created : existing;
