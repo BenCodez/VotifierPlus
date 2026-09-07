@@ -538,9 +538,9 @@ public class VoteParser {
 
 		String serviceName = requireString(votePayload, FIELD_SERVICE_NAME, "Inner JSON from " + address + ": ");
 		String username = requireString(votePayload, FIELD_USERNAME, "Inner JSON from " + address + ": ");
-		String voteAddress = requireString(votePayload, FIELD_ADDRESS, "Inner JSON from " + address + ": ");
+		String voteAddress = votePayload.get(FIELD_ADDRESS).getAsString();
 		String timeStamp = requireString(votePayload, FIELD_TIMESTAMP, "Inner JSON from " + address + ": ");
-		String receivedChallenge = requireString(votePayload, FIELD_CHALLENGE, "Inner JSON from " + address + ": ");
+		String receivedChallenge = requireString(votePayload, FIELD_CHALLENGE, "Inner JSON from " + address + ": ").trim();
 
 		Map<String, Key> tokens = receiver.getTokens();
 		Key key = tokens.get(serviceName);
