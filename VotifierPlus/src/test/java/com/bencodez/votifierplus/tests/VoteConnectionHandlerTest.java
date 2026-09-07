@@ -293,6 +293,27 @@ public class VoteConnectionHandlerTest {
 	}
 
 	@Test
+	public void testConfiguredTunnelCanProvideClientIdentityBeforeThrottleDecision() throws Exception {
+		receiver.setUseTokens(false);
+		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("127.0.0.1"), "10s", 1, "30s", 1,
+				"30s", false, 999, "1s", "60s");
+		VoteThrottleService throttleService = new VoteThrottleService(config);
+		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
+		throttleService.fail("tunnel:127.0.0.1", true, false);
+
+		try (ServerSocket serverSocket = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
+				Socket accepted = serverSocket.accept()) {
+			Future<Vote> future = executor.submit(() -> handler.handle(accepted));
+			BufferedReader reader = new BufferedReader(
+					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
+			assertEquals("VOTIFIER 1", reader.readLine(), "Shared tunnels must reach proxy-header detection");
+			client.close();
+			assertNull(future.get());
+		}
+	}
+
+	@Test
 	public void testHandlePresentV1PayloadSkipsHandshake() throws Exception {
 		receiver.setUseTokens(false);
 		VoteThrottleService throttleService = new VoteThrottleService(null);
