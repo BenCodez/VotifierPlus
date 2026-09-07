@@ -10,6 +10,7 @@ import java.net.SocketException;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class VoteThrottleService {
+	private static final int MAX_TRACKED_KEYS = 4096;
 
 	private static final class LogState {
 		private volatile long lastLogMs;
@@ -103,6 +104,7 @@ public class VoteThrottleService {
 		long now = System.currentTimeMillis();
 		long windowMs = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
 
+		trimLogStates(now);
 		LogState state = logStates.get(key);
 		if (state == null) {
 			LogState created = new LogState();
@@ -139,6 +141,7 @@ public class VoteThrottleService {
 	}
 
 	private ThrottleState getThrottleState(String key) {
+		trimThrottleStates(System.currentTimeMillis());
 		ThrottleState state = throttleStates.get(key);
 		if (state == null) {
 			ThrottleState created = new ThrottleState();
@@ -147,5 +150,41 @@ public class VoteThrottleService {
 			state = existing == null ? created : existing;
 		}
 		return state;
+	}
+
+	private void trimLogStates(long now) {
+		if (logStates.size() < MAX_TRACKED_KEYS) {
+			return;
+		}
+		long expiry = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
+		for (java.util.Map.Entry<String, LogState> entry : logStates.entrySet()) {
+			if (now - entry.getValue().lastLogMs >= expiry) {
+				logStates.remove(entry.getKey(), entry.getValue());
+			}
+		}
+		removeOneIfFull(logStates);
+	}
+
+	private void trimThrottleStates(long now) {
+		if (throttleStates.size() < MAX_TRACKED_KEYS) {
+			return;
+		}
+		for (java.util.Map.Entry<String, ThrottleState> entry : throttleStates.entrySet()) {
+			ThrottleState state = entry.getValue();
+			if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
+					&& now - state.windowStartMs > config.windowMs) {
+				throttleStates.remove(entry.getKey(), state);
+			}
+		}
+		removeOneIfFull(throttleStates);
+	}
+
+	private static <T> void removeOneIfFull(ConcurrentHashMap<String, T> states) {
+		if (states.size() >= MAX_TRACKED_KEYS) {
+			java.util.Iterator<String> iterator = states.keySet().iterator();
+			if (iterator.hasNext()) {
+				states.remove(iterator.next());
+			}
+		}
 	}
 }
