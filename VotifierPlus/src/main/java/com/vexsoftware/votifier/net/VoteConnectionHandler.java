@@ -59,12 +59,6 @@ public class VoteConnectionHandler {
 
 			throttleKey = "tunnel:" + remoteIp;
 			tunnelMode = throttleService.isTunnelMode(remoteIp);
-			if (!tunnelMode && throttleService.isBlocked(throttleKey)) {
-				throttleService.logWarning(receiver, "throttle|" + throttleKey,
-						"Votifier rejected a throttled connection from " + remoteIp);
-				return null;
-			}
-
 			receiver.debug("Accepted connection from: " + address);
 			accepted.setSoTimeout(5000);
 
