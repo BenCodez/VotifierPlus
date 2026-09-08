@@ -488,6 +488,9 @@ public class VoteReceiverThrottleTest {
 		service.fail("ip:overflow-a", "Aa", false, false);
 		service.fail("ip:overflow-a", "Aa", false, false);
 		assertTrue(service.isBlocked("ip:overflow-b", "BB"));
+		assertEquals("aggregate-overflow:" + Math.floorMod("BB".hashCode(), 64),
+				service.blockedKey("ip:overflow-b", "BB"),
+				"all remotes rejected by one overflow bucket must share its log key");
 
 		Map<?, ?> aggregates = stateMap(service, "aggregateStates");
 		aggregates.remove(aggregates.keySet().iterator().next());
@@ -534,6 +537,20 @@ public class VoteReceiverThrottleTest {
 		assertTrue(blocked.get(), "the primary throttle applied while waiting must not be bypassed");
 	}
 
+	@Test
+	public void testSaturatedPrimaryStateCachesItsNextPossibleSweep() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int index = 0; index < 4096; index++) service.fail("ip:active:" + index, false, true);
+
+		service.fail("ip:overflow:first", false, true);
+		long nextSweep = longField(service, "nextThrottleSweepMs");
+		assertTrue(nextSweep > System.currentTimeMillis());
+		service.fail("ip:overflow:second", false, true);
+		assertEquals(nextSweep, longField(service, "nextThrottleSweepMs"),
+				"a miss before the earliest expiry must reuse the saturated-state decision");
+	}
+
 	private static ThrottleConfig tunnelCfg(String... remoteIps) {
 		return new ThrottleConfig(true, new java.util.HashSet<String>(java.util.Arrays.asList(remoteIps)), "5s", 1,
 				"10s", 1, "10s", true, 1, "60s", "60s");
@@ -547,5 +564,11 @@ public class VoteReceiverThrottleTest {
 		Field field = VoteThrottleService.class.getDeclaredField(fieldName);
 		field.setAccessible(true);
 		return (Map<?, ?>) field.get(service);
+	}
+
+	private static long longField(VoteThrottleService service, String fieldName) throws Exception {
+		Field field = VoteThrottleService.class.getDeclaredField(fieldName);
+		field.setAccessible(true);
+		return field.getLong(service);
 	}
 }

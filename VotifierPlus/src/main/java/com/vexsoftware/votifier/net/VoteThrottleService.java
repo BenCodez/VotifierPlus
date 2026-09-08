@@ -33,6 +33,9 @@ public class VoteThrottleService {
 	private final ThrottleState[] aggregateOverflowStates = new ThrottleState[AGGREGATE_OVERFLOW_BUCKETS];
 	private final Object logStateLock = new Object();
 	private final Object throttleStateLock = new Object();
+	/* Guarded by throttleStateLock; avoid O(n) sweeps while all entries are known active. */
+	private long nextThrottleSweepMs;
+	private long nextAggregateSweepMs;
 	/* Configured tunnel remotes are finite, trusted aggregate identities. */
 
 	public VoteThrottleService(ThrottleConfig config) {
@@ -80,7 +83,9 @@ public class VoteThrottleService {
 				return key;
 			}
 			if (aggregateKey != null && isBlocked(getAggregateState(aggregateKey))) {
-				return aggregateKey;
+				if (aggregateStates.containsKey(aggregateKey)) return aggregateKey;
+				return "aggregate-overflow:"
+						+ Math.floorMod(aggregateKey.hashCode(), AGGREGATE_OVERFLOW_BUCKETS);
 			}
 			return key;
 		}
@@ -305,16 +310,20 @@ public class VoteThrottleService {
 		if (throttleStates.size() < MAX_TRACKED_KEYS) {
 			return true;
 		}
+		if (now < nextThrottleSweepMs) return false;
+		long nextSweep = Long.MAX_VALUE;
 		for (java.util.Map.Entry<String, ThrottleState> entry : throttleStates.entrySet()) {
 			ThrottleState state = entry.getValue();
 			if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
 					&& now - state.windowStartMs > config.windowMs) {
 				throttleStates.remove(entry.getKey(), state);
-			}
+			} else nextSweep = Math.min(nextSweep, stateExpiry(state));
 		}
 		if (throttleStates.size() < MAX_TRACKED_KEYS) {
+			nextThrottleSweepMs = 0L;
 			return true;
 		}
+		nextThrottleSweepMs = nextSweep;
 		return false;
 	}
 
@@ -322,6 +331,8 @@ public class VoteThrottleService {
 		if (aggregateStates.size() < MAX_TRACKED_KEYS) {
 			return true;
 		}
+		if (now < nextAggregateSweepMs) return false;
+		long nextSweep = Long.MAX_VALUE;
 		for (java.util.Map.Entry<String, ThrottleState> entry : aggregateStates.entrySet()) {
 			if (isConfiguredAggregateKey(entry.getKey())) {
 				continue;
@@ -330,9 +341,17 @@ public class VoteThrottleService {
 			if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
 					&& now - state.windowStartMs > config.windowMs) {
 				aggregateStates.remove(entry.getKey(), state);
-			}
+			} else nextSweep = Math.min(nextSweep, stateExpiry(state));
 		}
-		return aggregateStates.size() < MAX_TRACKED_KEYS;
+		boolean available = aggregateStates.size() < MAX_TRACKED_KEYS;
+		nextAggregateSweepMs = available ? 0L : nextSweep;
+		return available;
+	}
+
+	private long stateExpiry(ThrottleState state) {
+		long windowExpiry = state.windowStartMs > Long.MAX_VALUE - config.windowMs - 1L
+				? Long.MAX_VALUE : state.windowStartMs + config.windowMs + 1L;
+		return Math.max(windowExpiry, Math.max(state.bannedUntilMs, state.throttledUntilMs));
 	}
 
 	private boolean isConfiguredAggregateKey(String key) {
