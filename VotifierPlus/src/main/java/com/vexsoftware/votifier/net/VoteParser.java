@@ -538,7 +538,8 @@ public class VoteParser {
 
 		String serviceName = requireString(votePayload, FIELD_SERVICE_NAME, "Inner JSON from " + address + ": ");
 		String username = requireString(votePayload, FIELD_USERNAME, "Inner JSON from " + address + ": ");
-		String voteAddress = votePayload.get(FIELD_ADDRESS).getAsString();
+		String voteAddress = requirePossiblyEmptyString(votePayload, FIELD_ADDRESS,
+				"Inner JSON from " + address + ": ");
 		String timeStamp = requireString(votePayload, FIELD_TIMESTAMP, "Inner JSON from " + address + ": ");
 		String receivedChallenge = requireString(votePayload, FIELD_CHALLENGE, "Inner JSON from " + address + ": ").trim();
 
@@ -589,6 +590,18 @@ public class VoteParser {
 		}
 
 		return value;
+	}
+
+	private String requirePossiblyEmptyString(JsonObject obj, String field, String errorPrefix)
+			throws InvalidVoteException {
+		if (!obj.has(field)) {
+			throw new InvalidVoteException(errorPrefix + "missing field '" + field + "'");
+		}
+		try {
+			return obj.get(field).getAsString();
+		} catch (Exception ex) {
+			throw new InvalidVoteException(errorPrefix + "invalid field '" + field + "'", ex);
+		}
 	}
 
 	private String readString(byte[] data, int offset) {

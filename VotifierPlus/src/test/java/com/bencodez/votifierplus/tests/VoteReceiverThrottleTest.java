@@ -6,9 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Field;
 import java.util.Collections;
-	import java.lang.reflect.Field;
-	import java.util.Map;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 
@@ -178,6 +182,83 @@ public class VoteReceiverThrottleTest {
 		}
 		assertTrue(mapSize(service, "throttleStates") <= 4096);
 		assertTrue(mapSize(service, "logStates") <= 4096);
+	}
+
+	@Test
+	public void testConcurrentNewLogKeysStayWithinBound() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 3, "10s", 2, "10s", false, 999, "1s"));
+		int workers = 16;
+		int keysPerWorker = 512;
+		ExecutorService executor = Executors.newFixedThreadPool(workers);
+		CountDownLatch ready = new CountDownLatch(workers);
+		CountDownLatch start = new CountDownLatch(1);
+		CountDownLatch finished = new CountDownLatch(workers);
+		try {
+			for (int worker = 0; worker < workers; worker++) {
+				final int workerId = worker;
+				executor.execute(() -> {
+					ready.countDown();
+					try {
+						start.await();
+						for (int key = 0; key < keysPerWorker; key++) {
+							service.allowLog("concurrent-log:" + workerId + ':' + key, "message");
+						}
+					} catch (InterruptedException ex) {
+						Thread.currentThread().interrupt();
+					} finally {
+						finished.countDown();
+					}
+				});
+			}
+			assertTrue(ready.await(5, TimeUnit.SECONDS));
+			start.countDown();
+			assertTrue(finished.await(10, TimeUnit.SECONDS));
+		} finally {
+			executor.shutdownNow();
+		}
+		assertEquals(4096, mapSize(service, "logStates"));
+	}
+
+	@Test
+	public void testConcurrentFailuresUpdateStateAtomically() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("60s", 100000, "10s", 100000, "10s", false, 999, "1s"));
+		int workers = 16;
+		int failuresPerWorker = 256;
+		ExecutorService executor = Executors.newFixedThreadPool(workers);
+		CountDownLatch ready = new CountDownLatch(workers);
+		CountDownLatch start = new CountDownLatch(1);
+		CountDownLatch finished = new CountDownLatch(workers);
+		try {
+			for (int worker = 0; worker < workers; worker++) {
+				executor.execute(() -> {
+					ready.countDown();
+					try {
+						start.await();
+						for (int failure = 0; failure < failuresPerWorker; failure++) {
+							service.fail("concurrent-failure", false, false);
+						}
+					} catch (InterruptedException ex) {
+						Thread.currentThread().interrupt();
+					} finally {
+						finished.countDown();
+					}
+				});
+			}
+			assertTrue(ready.await(5, TimeUnit.SECONDS));
+			start.countDown();
+			assertTrue(finished.await(10, TimeUnit.SECONDS));
+		} finally {
+			executor.shutdownNow();
+		}
+		Field statesField = VoteThrottleService.class.getDeclaredField("throttleStates");
+		statesField.setAccessible(true);
+		Map<?, ?> states = (Map<?, ?>) statesField.get(service);
+		Object state = states.get("concurrent-failure");
+		Field failuresField = state.getClass().getDeclaredField("failures");
+		failuresField.setAccessible(true);
+		assertEquals(workers * failuresPerWorker, failuresField.getInt(state));
 	}
 
 	@Test

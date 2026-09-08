@@ -27,6 +27,8 @@ public class VoteThrottleService {
 	private final ThrottleConfig config;
 	private final ConcurrentHashMap<String, LogState> logStates = new ConcurrentHashMap<String, LogState>();
 	private final ConcurrentHashMap<String, ThrottleState> throttleStates = new ConcurrentHashMap<String, ThrottleState>();
+	private final Object logStateLock = new Object();
+	private final Object throttleStateLock = new Object();
 
 	public VoteThrottleService(ThrottleConfig config) {
 		this.config = config;
@@ -69,65 +71,69 @@ public class VoteThrottleService {
 			return;
 		}
 
-		long now = System.currentTimeMillis();
-		ThrottleState state = getThrottleState(key);
-		if (state == null) {
-			return;
-		}
+		synchronized (throttleStateLock) {
+			long now = System.currentTimeMillis();
+			ThrottleState state = getThrottleState(key);
+			if (state == null) {
+				return;
+			}
 
-		if (now - state.windowStartMs > config.windowMs) {
-			state.windowStartMs = now;
-			state.failures = 0;
-		}
+			if (now - state.windowStartMs > config.windowMs) {
+				state.windowStartMs = now;
+				state.failures = 0;
+			}
 
-		state.failures++;
+			state.failures++;
 
-		if (config.perClientBanEnabled && realIpKnown && state.failures >= config.perClientBanFailures) {
-			state.bannedUntilMs = now + config.perClientBanForMs;
-			return;
-		}
+			if (config.perClientBanEnabled && realIpKnown && state.failures >= config.perClientBanFailures) {
+				state.bannedUntilMs = now + config.perClientBanForMs;
+				return;
+			}
 
-		int threshold = tunnelMode ? config.tunnelFailures : config.failures;
-		long duration = tunnelMode ? config.tunnelThrottleForMs : config.throttleForMs;
+			int threshold = tunnelMode ? config.tunnelFailures : config.failures;
+			long duration = tunnelMode ? config.tunnelThrottleForMs : config.throttleForMs;
 
-		if (state.failures >= threshold) {
-			state.throttledUntilMs = now + duration;
+			if (state.failures >= threshold) {
+				state.throttledUntilMs = now + duration;
+			}
 		}
 	}
 
 	public void success(String key) {
-		ThrottleState state = throttleStates.get(key);
-		if (state != null) {
-			state.failures = 0;
-			state.windowStartMs = System.currentTimeMillis();
+		synchronized (throttleStateLock) {
+			ThrottleState state = throttleStates.get(key);
+			if (state != null) {
+				state.failures = 0;
+				state.windowStartMs = System.currentTimeMillis();
+			}
 		}
 	}
 
 	public String allowLog(String key, String msg) {
-		long now = System.currentTimeMillis();
-		long windowMs = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
-
-		LogState state = logStates.get(key);
-		if (state == null) {
-			trimLogStates(now);
-			LogState created = new LogState();
-			LogState existing = logStates.putIfAbsent(key, created);
-			state = existing == null ? created : existing;
-		}
-
-		if (now - state.lastLogMs >= windowMs) {
-			int suppressed = state.suppressed;
-			state.suppressed = 0;
-			state.lastLogMs = now;
-
-			if (suppressed > 0) {
-				return msg + " (suppressed " + suppressed + " similar in last " + windowMs + "ms)";
+		synchronized (logStateLock) {
+			long now = System.currentTimeMillis();
+			long windowMs = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
+			LogState state = logStates.get(key);
+			if (state == null) {
+				trimLogStates(now);
+				state = new LogState();
+				logStates.put(key, state);
 			}
-			return msg;
-		}
 
-		state.suppressed++;
-		return null;
+			if (now - state.lastLogMs >= windowMs) {
+				int suppressed = state.suppressed;
+				state.suppressed = 0;
+				state.lastLogMs = now;
+
+				if (suppressed > 0) {
+					return msg + " (suppressed " + suppressed + " similar in last " + windowMs + "ms)";
+				}
+				return msg;
+			}
+
+			state.suppressed++;
+			return null;
+		}
 	}
 
 	public void logWarning(VoteReceiver receiver, String key, String message) {
@@ -143,7 +149,7 @@ public class VoteThrottleService {
 	public void logGenericError(String remoteIp, Exception ex) {
 	}
 
-	private synchronized ThrottleState getThrottleState(String key) {
+	private ThrottleState getThrottleState(String key) {
 		ThrottleState state = throttleStates.get(key);
 		if (state == null) {
 			if (!trimThrottleStates(System.currentTimeMillis())) {
