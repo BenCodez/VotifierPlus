@@ -431,6 +431,26 @@ public class VoteReceiverTest {
 	}
 
 	@Test
+	public void testParseV2VoteAllowsEmptyAddress() throws Exception {
+		PushbackInputStream in = new PushbackInputStream(
+				new ByteArrayInputStream(createSignedV2Payload("minePortalUser", "", "testChallenge")), 512);
+
+		VoteRequest request = parser.parse(in, VoteProtocolVersion.V2, receiver, "test-address", receiver.getChallenge());
+
+		assertEquals("", request.getAddress());
+	}
+
+	@Test
+	public void testParseV2VoteTrimsReceivedChallenge() throws Exception {
+		PushbackInputStream in = new PushbackInputStream(new ByteArrayInputStream(
+				createSignedV2Payload("minePortalUser", "127.0.0.1", "testChallenge \r\n")), 512);
+
+		VoteRequest request = parser.parse(in, VoteProtocolVersion.V2, receiver, "test-address", receiver.getChallenge());
+
+		assertEquals("minePortalUser", request.getUsername());
+	}
+
+	@Test
 	public void testParseByteFragmentedFramedV2Vote() throws Exception {
 		byte[] framedPayload = frameV2Payload(createSignedV2Payload("fragmentedUser"));
 		ByteArrayInputStream fragmented = new ByteArrayInputStream(framedPayload) {
@@ -652,12 +672,16 @@ public class VoteReceiverTest {
 	}
 
 	private byte[] createSignedV2Payload(String username) throws Exception {
+		return createSignedV2Payload(username, "127.0.0.1", "testChallenge");
+	}
+
+	private byte[] createSignedV2Payload(String username, String voteAddress, String voteChallenge) throws Exception {
 		JsonObject inner = new JsonObject();
 		inner.addProperty("serviceName", "votifier.bencodez.com");
 		inner.addProperty("username", username);
-		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("address", voteAddress);
 		inner.addProperty("timestamp", "TestTimestampV2");
-		inner.addProperty("challenge", "testChallenge");
+		inner.addProperty("challenge", voteChallenge);
 		String payload = inner.toString();
 
 		Mac mac = Mac.getInstance("HmacSHA256");
