@@ -308,7 +308,9 @@ public class VoteThrottleService {
 			ThrottleState existing = throttleStates.putIfAbsent(key, created);
 			state = existing == null ? created : existing;
 			if (existing == null && throttleStates.size() >= MAX_TRACKED_KEYS) {
-				nextThrottleSweepMs = earlierDeadline(nextThrottleSweepMs, stateExpiry(created));
+				nextThrottleSweepMs = nextThrottleSweepMs == 0L
+						? earliestThrottleExpiry(throttleStates, false)
+						: earlierDeadline(nextThrottleSweepMs, stateExpiry(created));
 			}
 		}
 		return state;
@@ -327,9 +329,22 @@ public class VoteThrottleService {
 		created.windowStartMs = now;
 		ThrottleState existing = aggregateStates.putIfAbsent(key, created);
 		if (existing == null && aggregateStates.size() >= MAX_TRACKED_KEYS) {
-			nextAggregateSweepMs = earlierDeadline(nextAggregateSweepMs, stateExpiry(created));
+			nextAggregateSweepMs = nextAggregateSweepMs == 0L
+					? earliestThrottleExpiry(aggregateStates, true)
+					: earlierDeadline(nextAggregateSweepMs, stateExpiry(created));
 		}
 		return existing == null ? created : existing;
+	}
+
+	private long earliestThrottleExpiry(ConcurrentHashMap<String, ThrottleState> states,
+			boolean skipConfiguredAggregates) {
+		long earliest = Long.MAX_VALUE;
+		for (java.util.Map.Entry<String, ThrottleState> entry : states.entrySet()) {
+			if (!skipConfiguredAggregates || !isConfiguredAggregateKey(entry.getKey())) {
+				earliest = Math.min(earliest, stateExpiry(entry.getValue()));
+			}
+		}
+		return earliest;
 	}
 
 	private static long earlierDeadline(long current, long candidate) {

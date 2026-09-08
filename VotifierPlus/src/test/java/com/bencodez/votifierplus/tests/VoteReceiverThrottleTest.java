@@ -634,6 +634,29 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testInitialPrimarySaturationUsesAnOlderStateExpiry() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("60s", 999, "60s", 999, "60s", false, 999, "1s"));
+		for (int index = 0; index < 4095; index++) service.fail("ip:initial-primary:" + index, false, true);
+
+		Map<?, ?> states = stateMap(service, "throttleStates");
+		Object expired = states.get("ip:initial-primary:0");
+		Field windowStartField = expired.getClass().getDeclaredField("windowStartMs");
+		windowStartField.setAccessible(true);
+		long now = System.currentTimeMillis();
+		for (Object state : states.values()) windowStartField.setLong(state, now + 60_000L);
+		windowStartField.setLong(expired, now - 61_000L);
+
+		service.fail("ip:initial-primary:capacity", false, true);
+		assertTrue(longField(service, "nextThrottleSweepMs") <= System.currentTimeMillis(),
+				"the first saturated map must retain the earlier existing expiry");
+		service.fail("ip:initial-primary:replacement", false, true);
+
+		assertFalse(states.containsKey("ip:initial-primary:0"));
+		assertTrue(states.containsKey("ip:initial-primary:replacement"));
+	}
+
+	@Test
 	public void testReclaimedPrimarySlotRetainsNextExpiryAfterImmediateRefill() throws Exception {
 		VoteThrottleService service = new VoteThrottleService(
 				cfg("5s", 999, "10s", 999, "10s", false, 999, "1s"));
@@ -720,6 +743,32 @@ public class VoteReceiverThrottleTest {
 		assertEquals(nextSweep, longField(service, "nextAggregateSweepMs"),
 				"the aggregate refill after reclamation must retain the next active expiry");
 		assertEquals(4096, aggregates.size());
+	}
+
+	@Test
+	public void testInitialAggregateSaturationUsesAnOlderStateExpiry() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("60s", 999, "60s", 999, "60s", false, 999, "1s"));
+		for (int index = 0; index < 4096; index++) service.fail("ip:initial-aggregate-primary:" + index, false, true);
+		for (int index = 0; index < 4095; index++) {
+			service.fail("ip:initial-aggregate-client:" + index, "remote:initial-aggregate:" + index, false, false);
+		}
+
+		Map<?, ?> aggregates = stateMap(service, "aggregateStates");
+		Object expired = aggregates.get("remote:initial-aggregate:0");
+		Field windowStartField = expired.getClass().getDeclaredField("windowStartMs");
+		windowStartField.setAccessible(true);
+		long now = System.currentTimeMillis();
+		for (Object state : aggregates.values()) windowStartField.setLong(state, now + 60_000L);
+		windowStartField.setLong(expired, now - 61_000L);
+
+		service.fail("ip:initial-aggregate-client:capacity", "remote:initial-aggregate:capacity", false, false);
+		assertTrue(longField(service, "nextAggregateSweepMs") <= System.currentTimeMillis(),
+				"the first saturated aggregate map must retain the earlier existing expiry");
+		service.fail("ip:initial-aggregate-client:replacement", "remote:initial-aggregate:replacement", false, false);
+
+		assertFalse(aggregates.containsKey("remote:initial-aggregate:0"));
+		assertTrue(aggregates.containsKey("remote:initial-aggregate:replacement"));
 	}
 
 	@Test
