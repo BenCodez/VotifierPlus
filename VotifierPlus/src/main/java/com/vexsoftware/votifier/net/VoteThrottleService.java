@@ -185,10 +185,15 @@ public class VoteThrottleService {
 
 	public void success(String key, String aggregateKey) {
 		synchronized (throttleStateLock) {
+			long now = System.currentTimeMillis();
 			ThrottleState state = throttleStates.get(key);
 			if (state != null) {
 				state.failures = 0;
-				state.windowStartMs = System.currentTimeMillis();
+				state.windowStartMs = now;
+				if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
+						&& throttleStates.remove(key, state)) {
+					nextThrottleSweepMs = 0L;
+				}
 			}
 			/* A proxied success must not clear failures shared by other identities. */
 			if (aggregateKey != null && key.equals(aggregateKey)) {
@@ -198,7 +203,11 @@ public class VoteThrottleService {
 				state = aggregateStates.get(aggregateKey);
 				if (state != null) {
 					state.failures = 0;
-					state.windowStartMs = System.currentTimeMillis();
+					state.windowStartMs = now;
+					if (!isConfiguredAggregateKey(aggregateKey) && state.bannedUntilMs <= now
+							&& state.throttledUntilMs <= now && aggregateStates.remove(aggregateKey, state)) {
+						nextAggregateSweepMs = 0L;
+					}
 				}
 			}
 		}

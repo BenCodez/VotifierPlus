@@ -145,6 +145,23 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testSuccessImmediatelyReclaimsPrimaryCapacity() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 3, "10s", 3, "10s", false, 999, "1s"));
+		for (int index = 0; index < 4096; index++) service.fail("ip:active:" + index, false, true);
+
+		service.fail("ip:overflow", false, true);
+		assertTrue(longField(service, "nextThrottleSweepMs") > System.currentTimeMillis());
+		service.success("ip:active:0");
+
+		assertEquals(4095, mapSize(service, "throttleStates"));
+		assertEquals(0L, longField(service, "nextThrottleSweepMs"));
+		service.fail("ip:replacement", false, true);
+		assertTrue(stateMap(service, "throttleStates").containsKey("ip:replacement"),
+				"a successful identity must release its primary slot immediately");
+	}
+
+	@Test
 	public void testSuccessResetsOverflowAggregateForDirectPeer() {
 		VoteThrottleService service = new VoteThrottleService(
 				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
