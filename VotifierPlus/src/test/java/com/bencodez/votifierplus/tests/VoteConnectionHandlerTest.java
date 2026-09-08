@@ -10,6 +10,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyPair;
@@ -277,6 +278,36 @@ public class VoteConnectionHandlerTest {
 			assertEquals("VOTIFIER 1", reader.readLine(), "Shared tunnels must reach proxy-header detection");
 			client.close();
 			assertNull(future.get());
+		}
+	}
+
+	@Test
+	public void testAggregateBlockRejectsBeforeHandshakeAndPayloadWait() throws Exception {
+		receiver.setUseTokens(false);
+		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("127.0.0.1"), "5s", 1, "10s", 1,
+				"10s", false, 999, "1s", "60s");
+		VoteThrottleService throttleService = new VoteThrottleService(config);
+		for (int i = 0; i < 4096; i++) {
+			throttleService.fail("ip:filler:" + i, false, true);
+		}
+		throttleService.fail("ip:blocked", "tunnel:127.0.0.1", false, true);
+		assertTrue(throttleService.isAggregateBlocked("tunnel:127.0.0.1"));
+
+		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
+		try (ServerSocket serverSocket = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
+				Socket accepted = serverSocket.accept()) {
+			client.setSoTimeout(500);
+			Future<Vote> future = executor.submit(() -> handler.handle(accepted));
+			BufferedReader clientReader = new BufferedReader(
+					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
+
+			try {
+				assertNull(clientReader.readLine(), "an aggregate-blocked remote must not receive a handshake");
+			} catch (SocketTimeoutException ex) {
+				throw new AssertionError("aggregate rejection must happen before waiting for payload", ex);
+			}
+			assertNull(future.get(1, java.util.concurrent.TimeUnit.SECONDS));
 		}
 	}
 

@@ -64,6 +64,15 @@ public class VoteConnectionHandler {
 			receiver.debug("Accepted connection from: " + address);
 			accepted.setSoTimeout(5000);
 
+			if (throttleService.isAggregateBlocked(aggregateThrottleKey)) {
+				long retry = throttleService.aggregateRetryAfterMs(aggregateThrottleKey);
+				String blockedKey = throttleService.aggregateBlockedKey(aggregateThrottleKey);
+				throttleService.logWarning(receiver, "throttle|" + blockedKey,
+						"Votifier throttling " + blockedKey + " (tunnel=" + tunnelMode + "), retry in "
+								+ Math.max(0, retry / 1000) + "s");
+				return null;
+			}
+
 			String challenge = receiver.getChallenge();
 			sendHandshakeIfNeeded(in, writer, challenge);
 

@@ -59,6 +59,41 @@ public class VoteThrottleService {
 		return isBlocked(key, null);
 	}
 
+	/**
+	 * Checks only the aggregate identity, without consulting a per-client state.
+	 * This is used before proxy headers are read so an already-blocked remote can
+	 * be rejected without making a primary tunnel state apply to every proxied
+	 * client identity.
+	 */
+	public boolean isAggregateBlocked(String aggregateKey) {
+		if (config == null || !config.enabled || aggregateKey == null) {
+			return false;
+		}
+
+		synchronized (throttleStateLock) {
+			return isBlocked(getAggregateState(aggregateKey));
+		}
+	}
+
+	public long aggregateRetryAfterMs(String aggregateKey) {
+		if (config == null || !config.enabled || aggregateKey == null) {
+			return 0L;
+		}
+
+		synchronized (throttleStateLock) {
+			return retryAfterMs(getAggregateState(aggregateKey));
+		}
+	}
+
+	public String aggregateBlockedKey(String aggregateKey) {
+		if (aggregateKey == null) return null;
+		synchronized (throttleStateLock) {
+			if (aggregateStates.containsKey(aggregateKey)) return aggregateKey;
+			return "aggregate-overflow:"
+					+ Math.floorMod(aggregateKey.hashCode(), AGGREGATE_OVERFLOW_BUCKETS);
+		}
+	}
+
 	public boolean isBlocked(String key, String aggregateKey) {
 		if (config == null || !config.enabled) {
 			return false;

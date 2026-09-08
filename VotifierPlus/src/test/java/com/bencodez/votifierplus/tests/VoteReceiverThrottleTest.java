@@ -508,6 +508,9 @@ public class VoteReceiverThrottleTest {
 		assertEquals("aggregate-overflow:" + Math.floorMod("BB".hashCode(), 64),
 				service.blockedKey("ip:overflow-b", "BB"),
 				"all remotes rejected by one overflow bucket must share its log key");
+		assertEquals("aggregate-overflow:" + Math.floorMod("BB".hashCode(), 64),
+				service.aggregateBlockedKey("BB"),
+				"pre-handshake aggregate rejection must use the same bounded log key");
 
 		Map<?, ?> aggregates = stateMap(service, "aggregateStates");
 		aggregates.remove(aggregates.keySet().iterator().next());
