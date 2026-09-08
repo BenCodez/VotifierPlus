@@ -129,8 +129,18 @@ public class VoteThrottleService {
 
 		synchronized (throttleStateLock) {
 			long now = System.currentTimeMillis();
-			ThrottleState state = getThrottleState(key);
 			boolean aggregate = false;
+			ThrottleState state = throttleStates.get(key);
+			if (state == null && aggregateKey != null) {
+				ThrottleState existingAggregate = getAggregateState(aggregateKey);
+				if (hasActiveFailures(existingAggregate, now)) {
+					state = existingAggregate;
+					aggregate = true;
+				}
+			}
+			if (state == null) {
+				state = getThrottleState(key);
+			}
 			if (state == null && aggregateKey != null) {
 				state = getAggregateThrottleState(aggregateKey, now);
 				aggregate = state != null;
@@ -159,6 +169,11 @@ public class VoteThrottleService {
 				state.throttledUntilMs = now + duration;
 			}
 		}
+	}
+
+	private boolean hasActiveFailures(ThrottleState state, long now) {
+		return state != null && (state.bannedUntilMs > now || state.throttledUntilMs > now
+				|| state.failures > 0 && now - state.windowStartMs <= config.windowMs);
 	}
 
 	public void success(String key) {

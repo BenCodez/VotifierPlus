@@ -333,6 +333,26 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testAggregateFallbackRemainsBoundAfterPrimaryCapacityRecovers() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 3, "10s", 3, "10s", false, 999, "1s"));
+		String aggregateKey = "tunnel:proxy";
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, false);
+		}
+
+		service.fail("ip:reused", aggregateKey, false, false);
+		service.fail("ip:reused", aggregateKey, false, false);
+		stateMap(service, "throttleStates").remove("ip:0");
+
+		service.fail("ip:reused", aggregateKey, false, false);
+
+		assertTrue(service.isBlocked("ip:reused", aggregateKey),
+				"an identity that used aggregate fallback must not split its failure counter after capacity recovers");
+		assertFalse(stateMap(service, "throttleStates").containsKey("ip:reused"));
+	}
+
+	@Test
 	public void testAggregateBlockUsesAggregateLogKey() {
 		VoteThrottleService service = new VoteThrottleService(
 				cfg("5s", 1, "10s", 1, "10s", false, 999, "1s"));
