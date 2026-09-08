@@ -319,6 +319,23 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testFullMapPreservesInWindowCountersAndUsesAggregateTunnel() throws Exception {
+		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("proxy"), "5s", 2, "10s", 2,
+				"10s", false, 999, "1s", "60s");
+		VoteThrottleService service = new VoteThrottleService(config);
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, true);
+		}
+
+		service.fail("ip:new", "tunnel:proxy", false, true);
+		assertFalse(service.isBlocked("ip:new", "tunnel:proxy"));
+		service.fail("ip:new", "tunnel:proxy", false, true);
+
+		assertTrue(service.isBlocked("ip:new", "tunnel:proxy"));
+		assertEquals(4096, mapSize(service, "throttleStates"));
+	}
+
+	@Test
 	public void testOverflowThrottleDoesNotBecomeGlobalAcrossTunnels() {
 		VoteThrottleService service = new VoteThrottleService(tunnelCfg("proxy-a", "proxy-b"));
 		for (int i = 0; i < 4096; i++) {

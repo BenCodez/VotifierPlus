@@ -234,13 +234,6 @@ public class VoteThrottleService {
 		if (throttleStates.size() < MAX_TRACKED_KEYS) {
 			return true;
 		}
-		for (java.util.Map.Entry<String, ThrottleState> entry : throttleStates.entrySet()) {
-			ThrottleState state = entry.getValue();
-			if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
-					&& throttleStates.remove(entry.getKey(), state)) {
-				return true;
-			}
-		}
 		return false;
 	}
 
