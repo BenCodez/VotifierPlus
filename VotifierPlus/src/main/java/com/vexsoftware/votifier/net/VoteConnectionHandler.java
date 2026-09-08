@@ -46,6 +46,7 @@ public class VoteConnectionHandler {
 		String remoteIp = "unknown";
 		String address = "";
 		String throttleKey = null;
+		String aggregateThrottleKey = null;
 		boolean tunnelMode = false;
 		boolean realIpKnown = false;
 
@@ -59,6 +60,7 @@ public class VoteConnectionHandler {
 
 			throttleKey = "tunnel:" + remoteIp;
 			tunnelMode = throttleService.isTunnelMode(remoteIp);
+			aggregateThrottleKey = tunnelMode ? throttleKey : null;
 			receiver.debug("Accepted connection from: " + address);
 			accepted.setSoTimeout(5000);
 
@@ -77,8 +79,8 @@ public class VoteConnectionHandler {
 			realIpKnown = realIp != null && !realIp.isEmpty();
 			throttleKey = realIpKnown ? "ip:" + realIp : "tunnel:" + remoteIp;
 
-			if (throttleService.isBlocked(throttleKey)) {
-				long retry = throttleService.retryAfterMs(throttleKey);
+			if (throttleService.isBlocked(throttleKey, aggregateThrottleKey)) {
+				long retry = throttleService.retryAfterMs(throttleKey, aggregateThrottleKey);
 				throttleService.logWarning(receiver, "throttle|" + throttleKey, "Votifier throttling " + throttleKey
 						+ " (tunnel=" + tunnelMode + "), retry in " + Math.max(0, retry / 1000) + "s");
 				return null;
@@ -110,7 +112,7 @@ public class VoteConnectionHandler {
 				throttleKey = "tunnel:" + remoteIp;
 			}
 
-			throttleService.fail(throttleKey, tunnelMode, realIpKnown);
+			throttleService.fail(throttleKey, aggregateThrottleKey, tunnelMode, realIpKnown);
 			throttleService.logWarning(receiver, "invalid|" + throttleKey,
 					"Invalid vote format from " + remoteIp + ": " + ex.getMessage());
 		} catch (VoteAuthenticationException ex) {
@@ -118,7 +120,7 @@ public class VoteConnectionHandler {
 				throttleKey = "tunnel:" + remoteIp;
 			}
 
-			throttleService.fail(throttleKey, tunnelMode, realIpKnown);
+			throttleService.fail(throttleKey, aggregateThrottleKey, tunnelMode, realIpKnown);
 			throttleService.logWarning(receiver, "auth|" + throttleKey,
 					"Authentication failed from " + remoteIp + ": " + ex.getMessage());
 		} catch (MalformedJsonException ex) {
@@ -126,7 +128,7 @@ public class VoteConnectionHandler {
 				throttleKey = "tunnel:" + remoteIp;
 			}
 
-			throttleService.fail(throttleKey, tunnelMode, false);
+			throttleService.fail(throttleKey, aggregateThrottleKey, tunnelMode, false);
 			throttleService.logWarning(receiver, "malformedjson|" + throttleKey,
 					"Invalid vote format: Malformed JSON payload from " + remoteIp + " - " + ex.getMessage());
 		} catch (BadPaddingException ex) {
@@ -134,7 +136,7 @@ public class VoteConnectionHandler {
 				throttleKey = "tunnel:" + remoteIp;
 			}
 
-			throttleService.fail(throttleKey, tunnelMode, realIpKnown);
+			throttleService.fail(throttleKey, aggregateThrottleKey, tunnelMode, realIpKnown);
 			throttleService.logWarning(receiver, "badpadding|" + throttleKey,
 					"Decryption failed: Invalid V1 vote block / public key mismatch from " + remoteIp);
 		} catch (SocketTimeoutException ex) {

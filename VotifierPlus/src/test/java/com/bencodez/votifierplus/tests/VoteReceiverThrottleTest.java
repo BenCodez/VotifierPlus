@@ -302,6 +302,54 @@ public class VoteReceiverThrottleTest {
 		assertEquals(4096, mapSize(service, "throttleStates"));
 	}
 
+	@Test
+	public void testFullThrottleMapAccountsNewIdentityAgainstAggregateTunnel() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(tunnelCfg("proxy"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, true);
+		}
+
+		String aggregateKey = "tunnel:proxy";
+		String newIdentity = "ip:new";
+		service.fail(newIdentity, aggregateKey, false, true);
+
+		assertTrue(service.isBlocked(newIdentity, aggregateKey));
+		assertTrue(service.retryAfterMs(newIdentity, aggregateKey) > 0);
+		assertEquals(4096, mapSize(service, "throttleStates"));
+	}
+
+	@Test
+	public void testOverflowThrottleDoesNotBecomeGlobalAcrossTunnels() {
+		VoteThrottleService service = new VoteThrottleService(tunnelCfg("proxy-a", "proxy-b"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, true);
+		}
+
+		service.fail("ip:new-a", "tunnel:proxy-a", false, true);
+
+		assertTrue(service.isBlocked("ip:new-a", "tunnel:proxy-a"));
+		assertFalse(service.isBlocked("ip:new-b", "tunnel:proxy-b"));
+	}
+
+	@Test
+	public void testOverflowFallbackIgnoresPrimaryTunnelState() {
+		VoteThrottleService service = new VoteThrottleService(tunnelCfg("proxy"));
+		service.fail("tunnel:proxy", true, false);
+		for (int i = 0; i < 4095; i++) {
+			service.fail("ip:" + i, false, true);
+		}
+
+		assertFalse(service.isBlocked("ip:new", "tunnel:proxy"));
+		assertEquals(0L, service.retryAfterMs("ip:new", "tunnel:proxy"));
+		service.fail("ip:new", "tunnel:proxy", false, true);
+		assertTrue(service.isBlocked("ip:new", "tunnel:proxy"));
+	}
+
+	private static ThrottleConfig tunnelCfg(String... remoteIps) {
+		return new ThrottleConfig(true, new java.util.HashSet<String>(java.util.Arrays.asList(remoteIps)), "5s", 1,
+				"10s", 1, "10s", true, 1, "60s", "60s");
+	}
+
 	private static int mapSize(VoteThrottleService service, String fieldName) throws Exception {
 		return stateMap(service, fieldName).size();
 	}

@@ -27,11 +27,19 @@ public class VoteThrottleService {
 	private final ThrottleConfig config;
 	private final ConcurrentHashMap<String, LogState> logStates = new ConcurrentHashMap<String, LogState>();
 	private final ConcurrentHashMap<String, ThrottleState> throttleStates = new ConcurrentHashMap<String, ThrottleState>();
+	private final ConcurrentHashMap<String, ThrottleState> aggregateStates =
+			new ConcurrentHashMap<String, ThrottleState>();
 	private final Object logStateLock = new Object();
 	private final Object throttleStateLock = new Object();
+	/* Configured tunnel remotes are finite, trusted aggregate identities. */
 
 	public VoteThrottleService(ThrottleConfig config) {
 		this.config = config;
+		if (config != null) {
+			for (String remoteIp : config.tunnelRemoteIps) {
+				aggregateStates.put("tunnel:" + remoteIp, new ThrottleState());
+			}
+		}
 	}
 
 	public ThrottleConfig getConfig() {
@@ -43,30 +51,60 @@ public class VoteThrottleService {
 	}
 
 	public boolean isBlocked(String key) {
+		return isBlocked(key, null);
+	}
+
+	public boolean isBlocked(String key, String aggregateKey) {
 		if (config == null || !config.enabled) {
 			return false;
 		}
 
 		ThrottleState state = throttleStates.get(key);
+		if (isBlocked(state)) {
+			return true;
+		}
+		synchronized (throttleStateLock) {
+			if (aggregateKey != null && throttleStates.get(key) == null)
+				return isBlocked(aggregateStates.get(aggregateKey));
+		}
+		return false;
+	}
+
+	private boolean isBlocked(ThrottleState state) {
 		if (state == null) {
 			return false;
 		}
-
 		long now = System.currentTimeMillis();
 		return state.bannedUntilMs > now || state.throttledUntilMs > now;
 	}
 
 	public long retryAfterMs(String key) {
+		return retryAfterMs(key, null);
+	}
+
+	public long retryAfterMs(String key, String aggregateKey) {
 		ThrottleState state = throttleStates.get(key);
+		long retry = retryAfterMs(state);
+		synchronized (throttleStateLock) {
+			if (aggregateKey != null && throttleStates.get(key) == null)
+				retry = Math.max(retry, retryAfterMs(aggregateStates.get(aggregateKey)));
+		}
+		return retry;
+	}
+
+	private long retryAfterMs(ThrottleState state) {
 		if (state == null) {
 			return 0L;
 		}
-
 		long now = System.currentTimeMillis();
 		return Math.max(state.bannedUntilMs, state.throttledUntilMs) - now;
 	}
 
 	public void fail(String key, boolean tunnelMode, boolean realIpKnown) {
+		fail(key, null, tunnelMode, realIpKnown);
+	}
+
+	public void fail(String key, String aggregateKey, boolean tunnelMode, boolean realIpKnown) {
 		if (config == null || !config.enabled) {
 			return;
 		}
@@ -74,6 +112,11 @@ public class VoteThrottleService {
 		synchronized (throttleStateLock) {
 			long now = System.currentTimeMillis();
 			ThrottleState state = getThrottleState(key);
+			boolean aggregate = false;
+			if (state == null && aggregateKey != null) {
+				state = aggregateStates.get(aggregateKey);
+				aggregate = state != null;
+			}
 			if (state == null) {
 				return;
 			}
@@ -85,7 +128,8 @@ public class VoteThrottleService {
 
 			state.failures++;
 
-			if (config.perClientBanEnabled && realIpKnown && state.failures >= config.perClientBanFailures) {
+			if (!aggregate && config.perClientBanEnabled && realIpKnown
+					&& state.failures >= config.perClientBanFailures) {
 				state.bannedUntilMs = now + config.perClientBanForMs;
 				return;
 			}
