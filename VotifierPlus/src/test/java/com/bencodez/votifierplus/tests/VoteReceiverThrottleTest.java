@@ -13,6 +13,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 
@@ -507,6 +508,30 @@ public class VoteReceiverThrottleTest {
 
 		assertTrue(service.isBlocked("ip:overflow-c", "BB"),
 				"a direct success must not erase failures belonging to a shared overflow bucket");
+	}
+
+	@Test
+	public void testBlockedCheckRechecksPrimaryAfterWaitingForFailureUpdate() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		String key = "ip:concurrent";
+		service.fail(key, false, true);
+		AtomicBoolean blocked = new AtomicBoolean();
+		Thread check = new Thread(() -> blocked.set(service.isBlocked(key, "tunnel:other")));
+		Field lockField = VoteThrottleService.class.getDeclaredField("throttleStateLock");
+		lockField.setAccessible(true);
+		Object lock = lockField.get(service);
+
+		synchronized (lock) {
+			check.start();
+			long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+			while (check.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.onSpinWait();
+			assertEquals(Thread.State.BLOCKED, check.getState());
+			service.fail(key, false, true);
+		}
+		check.join(TimeUnit.SECONDS.toMillis(2));
+
+		assertTrue(blocked.get(), "the primary throttle applied while waiting must not be bypassed");
 	}
 
 	private static ThrottleConfig tunnelCfg(String... remoteIps) {

@@ -61,11 +61,9 @@ public class VoteThrottleService {
 			return false;
 		}
 
-		ThrottleState state = throttleStates.get(key);
-		if (isBlocked(state)) {
-			return true;
-		}
 		synchronized (throttleStateLock) {
+			ThrottleState state = throttleStates.get(key);
+			if (isBlocked(state)) return true;
 			if (aggregateKey != null)
 				return isBlocked(getAggregateState(aggregateKey));
 		}
