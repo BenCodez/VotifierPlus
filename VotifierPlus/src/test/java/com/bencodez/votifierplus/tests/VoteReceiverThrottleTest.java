@@ -322,6 +322,24 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testSaturatedLogStateCachesExpiryAndEvictsWithoutRescanning() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.allowLog("log:saturated:" + i, "message");
+		}
+
+		service.allowLog("log:saturated:first-miss", "message");
+		long nextSweep = longField(service, "nextLogSweepMs");
+		assertTrue(nextSweep > System.currentTimeMillis());
+		service.allowLog("log:saturated:second-miss", "message");
+
+		assertEquals(nextSweep, longField(service, "nextLogSweepMs"),
+				"saturated log misses before expiry must reuse the cached sweep deadline");
+		assertEquals(4096, mapSize(service, "logStates"));
+	}
+
+	@Test
 	public void testOverflowDoesNotEvictActiveBan() throws Exception {
 		VoteThrottleService service = new VoteThrottleService(
 				cfg("5s", 1, "10s", 1, "10s", true, 1, "60s"));
@@ -569,6 +587,32 @@ public class VoteReceiverThrottleTest {
 		service.fail("ip:overflow:second", false, true);
 		assertEquals(nextSweep, longField(service, "nextThrottleSweepMs"),
 				"a miss before the earliest expiry must reuse the saturated-state decision");
+	}
+
+	@Test
+	public void testAggregateLookupReclaimsExpiredEntryBeforeUsingOverflowBucket() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:primary:" + i, false, false);
+		}
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:aggregate:" + i, "remote:" + i, false, false);
+		}
+
+		Map<?, ?> aggregates = stateMap(service, "aggregateStates");
+		Object expired = aggregates.get("remote:0");
+		assertNotNull(expired);
+		Field windowStartField = expired.getClass().getDeclaredField("windowStartMs");
+		windowStartField.setAccessible(true);
+		windowStartField.setLong(expired, System.currentTimeMillis() - 6000L);
+		Field nextSweepField = VoteThrottleService.class.getDeclaredField("nextAggregateSweepMs");
+		nextSweepField.setAccessible(true);
+		nextSweepField.setLong(service, 0L);
+
+		assertFalse(service.isAggregateBlocked("remote:not-yet-tracked"));
+		assertEquals(4095, aggregates.size(),
+				"an expired aggregate must be reclaimed before an overflow bucket is consulted");
 	}
 
 	private static ThrottleConfig tunnelCfg(String... remoteIps) {

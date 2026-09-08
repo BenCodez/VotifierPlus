@@ -33,6 +33,8 @@ public class VoteThrottleService {
 	private final ThrottleState[] aggregateOverflowStates = new ThrottleState[AGGREGATE_OVERFLOW_BUCKETS];
 	private final Object logStateLock = new Object();
 	private final Object throttleStateLock = new Object();
+	/* Guarded by logStateLock; avoid O(n) sweeps while all entries are active. */
+	private long nextLogSweepMs;
 	/* Guarded by throttleStateLock; avoid O(n) sweeps while all entries are known active. */
 	private long nextThrottleSweepMs;
 	private long nextAggregateSweepMs;
@@ -322,6 +324,13 @@ public class VoteThrottleService {
 		if (state != null) {
 			return state;
 		}
+		long now = System.currentTimeMillis();
+		if (aggregateStates.size() >= MAX_TRACKED_KEYS && trimAggregateStates(now)) {
+			state = aggregateStates.get(key);
+			if (state != null) {
+				return state;
+			}
+		}
 		return aggregateStates.size() >= MAX_TRACKED_KEYS
 				? aggregateOverflowStates[Math.floorMod(key.hashCode(), AGGREGATE_OVERFLOW_BUCKETS)] : null;
 	}
@@ -339,15 +348,33 @@ public class VoteThrottleService {
 
 	private void trimLogStates(long now) {
 		if (logStates.size() < MAX_TRACKED_KEYS) {
+			nextLogSweepMs = 0L;
 			return;
 		}
 		long expiry = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
+		if (now < nextLogSweepMs) {
+			/* The map is still saturated, so make bounded progress without rescanning it. */
+			removeOneIfFull(logStates);
+			return;
+		}
+
+		long nextSweep = Long.MAX_VALUE;
 		for (java.util.Map.Entry<String, LogState> entry : logStates.entrySet()) {
-			if (now - entry.getValue().lastLogMs >= expiry) {
+			LogState state = entry.getValue();
+			long stateExpiry = state.lastLogMs > Long.MAX_VALUE - expiry ? Long.MAX_VALUE
+					: state.lastLogMs + expiry;
+			if (stateExpiry <= now) {
 				logStates.remove(entry.getKey(), entry.getValue());
+			} else {
+				nextSweep = Math.min(nextSweep, stateExpiry);
 			}
 		}
-		removeOneIfFull(logStates);
+		if (logStates.size() >= MAX_TRACKED_KEYS) {
+			removeOneIfFull(logStates);
+			nextLogSweepMs = nextSweep;
+		} else {
+			nextLogSweepMs = 0L;
+		}
 	}
 
 	private boolean trimThrottleStates(long now) {
