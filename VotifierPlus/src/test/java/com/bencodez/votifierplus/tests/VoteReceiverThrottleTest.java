@@ -462,6 +462,23 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testDirectSuccessDoesNotClearAggregateSharedByProxiedFailures() {
+		VoteThrottleService service = new VoteThrottleService(tunnelCfg("proxy"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:filler:" + i, false, true);
+		}
+
+		String aggregateKey = "tunnel:proxy";
+		service.fail("ip:proxied", aggregateKey, false, false);
+		assertTrue(service.isAggregateBlocked(aggregateKey));
+
+		service.success(aggregateKey, aggregateKey);
+
+		assertTrue(service.isAggregateBlocked(aggregateKey),
+				"a direct success must not clear an aggregate that has been shared by proxied identities");
+	}
+
+	@Test
 	public void testFullMapPreservesInWindowCountersAndUsesAggregateTunnel() throws Exception {
 		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("proxy"), "5s", 2, "10s", 2,
 				"10s", false, 999, "1s", "60s");

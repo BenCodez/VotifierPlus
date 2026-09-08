@@ -23,6 +23,9 @@ public class VoteThrottleService {
 		private volatile int failures;
 		private volatile long throttledUntilMs;
 		private volatile long bannedUntilMs;
+		/* Once a proxied identity contributes to this aggregate, direct successes
+		 * must not treat the aggregate as private to the tunnel remote. */
+		private volatile boolean sharedByProxiedIdentity;
 	}
 
 	private final ThrottleConfig config;
@@ -189,6 +192,9 @@ public class VoteThrottleService {
 			if (state == null) {
 				return;
 			}
+			if (aggregate && aggregateKey != null && !key.equals(aggregateKey)) {
+				state.sharedByProxiedIdentity = true;
+			}
 
 			if (now - state.windowStartMs > config.windowMs) {
 				state.windowStartMs = now;
@@ -239,7 +245,7 @@ public class VoteThrottleService {
 				// bucket is deliberately shared by many identities and must not be
 				// reset by one successful request.
 				state = aggregateStates.get(aggregateKey);
-				if (state != null) {
+				if (state != null && !state.sharedByProxiedIdentity) {
 					state.failures = 0;
 					state.windowStartMs = now;
 					if (!isConfiguredAggregateKey(aggregateKey) && state.bannedUntilMs <= now
