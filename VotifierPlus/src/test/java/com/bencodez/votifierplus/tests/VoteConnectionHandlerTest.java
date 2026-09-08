@@ -443,6 +443,44 @@ public class VoteConnectionHandlerTest {
 	}
 
 	@Test
+	public void testNonTunnelProxyOverflowUsesRemoteAggregate() throws Exception {
+		receiver.setUseTokens(false);
+		ThrottleConfig config = new ThrottleConfig(true, Collections.<String>emptySet(), "5s", 1, "10s", 1,
+				"10s", false, 999, "1s", "60s");
+		VoteThrottleService throttleService = new VoteThrottleService(config);
+		for (int i = 0; i < 4096; i++) {
+			throttleService.fail("ip:" + i, false, true);
+		}
+		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
+
+		try (ServerSocket serverSocket = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
+				Socket accepted = serverSocket.accept()) {
+
+			Future<Vote> future = executor.submit(new Callable<Vote>() {
+				@Override
+				public Vote call() {
+					return handler.handle(accepted);
+				}
+			});
+
+			BufferedReader clientReader = new BufferedReader(
+					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
+			OutputStream clientOut = client.getOutputStream();
+			assertEquals("VOTIFIER 1", clientReader.readLine());
+
+			clientOut.write("PROXY TCP4 203.0.113.10 127.0.0.1 1234 8192\r\n"
+					.getBytes(StandardCharsets.US_ASCII));
+			clientOut.write(new byte[256]);
+			clientOut.flush();
+			client.shutdownOutput();
+
+			assertNull(future.get());
+			assertTrue(throttleService.isBlocked("ip:203.0.113.10", "tunnel:127.0.0.1"));
+		}
+	}
+
+	@Test
 	public void testHandleTestVoteDoesNotSendOkResponse() throws Exception {
 		receiver.setUseTokens(false);
 		VoteThrottleService throttleService = new VoteThrottleService(null);

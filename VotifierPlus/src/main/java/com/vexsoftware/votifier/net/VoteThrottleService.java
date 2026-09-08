@@ -114,7 +114,7 @@ public class VoteThrottleService {
 			ThrottleState state = getThrottleState(key);
 			boolean aggregate = false;
 			if (state == null && aggregateKey != null) {
-				state = aggregateStates.get(aggregateKey);
+				state = getAggregateThrottleState(aggregateKey, now);
 				aggregate = state != null;
 			}
 			if (state == null) {
@@ -207,6 +207,21 @@ public class VoteThrottleService {
 		return state;
 	}
 
+	private ThrottleState getAggregateThrottleState(String key, long now) {
+		ThrottleState state = aggregateStates.get(key);
+		if (state != null) {
+			return state;
+		}
+		if (!trimAggregateStates(now)) {
+			return null;
+		}
+
+		ThrottleState created = new ThrottleState();
+		created.windowStartMs = now;
+		ThrottleState existing = aggregateStates.putIfAbsent(key, created);
+		return existing == null ? created : existing;
+	}
+
 	private void trimLogStates(long now) {
 		if (logStates.size() < MAX_TRACKED_KEYS) {
 			return;
@@ -235,6 +250,28 @@ public class VoteThrottleService {
 			return true;
 		}
 		return false;
+	}
+
+	private boolean trimAggregateStates(long now) {
+		if (aggregateStates.size() < MAX_TRACKED_KEYS) {
+			return true;
+		}
+		for (java.util.Map.Entry<String, ThrottleState> entry : aggregateStates.entrySet()) {
+			if (isConfiguredAggregateKey(entry.getKey())) {
+				continue;
+			}
+			ThrottleState state = entry.getValue();
+			if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
+					&& now - state.windowStartMs > config.windowMs) {
+				aggregateStates.remove(entry.getKey(), state);
+			}
+		}
+		return aggregateStates.size() < MAX_TRACKED_KEYS;
+	}
+
+	private boolean isConfiguredAggregateKey(String key) {
+		return config != null && key.startsWith("tunnel:")
+				&& config.tunnelRemoteIps.contains(key.substring("tunnel:".length()));
 	}
 
 	private static <T> void removeOneIfFull(ConcurrentHashMap<String, T> states) {

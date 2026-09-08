@@ -336,6 +336,24 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testFullThrottleMapAccountsNewIdentityAgainstNonTunnelAggregate() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 1, "10s", 1, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, true);
+		}
+
+		String aggregateKey = "tunnel:proxy";
+		String newIdentity = "ip:new";
+		service.fail(newIdentity, aggregateKey, false, true);
+
+		assertTrue(service.isBlocked(newIdentity, aggregateKey));
+		assertTrue(service.retryAfterMs(newIdentity, aggregateKey) > 0);
+		assertEquals(4096, mapSize(service, "throttleStates"));
+		assertEquals(1, mapSize(service, "aggregateStates"));
+	}
+
+	@Test
 	public void testOverflowThrottleDoesNotBecomeGlobalAcrossTunnels() {
 		VoteThrottleService service = new VoteThrottleService(tunnelCfg("proxy-a", "proxy-b"));
 		for (int i = 0; i < 4096; i++) {

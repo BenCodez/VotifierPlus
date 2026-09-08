@@ -60,7 +60,7 @@ public class VoteConnectionHandler {
 
 			throttleKey = "tunnel:" + remoteIp;
 			tunnelMode = throttleService.isTunnelMode(remoteIp);
-			aggregateThrottleKey = tunnelMode ? throttleKey : null;
+			aggregateThrottleKey = throttleKey;
 			receiver.debug("Accepted connection from: " + address);
 			accepted.setSoTimeout(5000);
 
