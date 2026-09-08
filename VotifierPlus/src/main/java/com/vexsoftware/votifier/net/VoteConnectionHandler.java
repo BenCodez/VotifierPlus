@@ -81,7 +81,8 @@ public class VoteConnectionHandler {
 
 			if (throttleService.isBlocked(throttleKey, aggregateThrottleKey)) {
 				long retry = throttleService.retryAfterMs(throttleKey, aggregateThrottleKey);
-				throttleService.logWarning(receiver, "throttle|" + throttleKey, "Votifier throttling " + throttleKey
+				String blockedKey = throttleService.blockedKey(throttleKey, aggregateThrottleKey);
+				throttleService.logWarning(receiver, "throttle|" + blockedKey, "Votifier throttling " + blockedKey
 						+ " (tunnel=" + tunnelMode + "), retry in " + Math.max(0, retry / 1000) + "s");
 				return null;
 			}
@@ -100,7 +101,7 @@ public class VoteConnectionHandler {
 			}
 
 			receiver.log("Received vote record -> " + vote);
-			throttleService.success(throttleKey);
+			throttleService.success(throttleKey, aggregateThrottleKey);
 
 			if (!"TestVote".equalsIgnoreCase(vote.getTimeStamp())) {
 				sendOkResponse(writer);

@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class VoteThrottleService {
 	private static final int MAX_TRACKED_KEYS = 4096;
+	private static final int AGGREGATE_OVERFLOW_BUCKETS = 64;
 
 	private static final class LogState {
 		private volatile long lastLogMs;
@@ -28,7 +29,8 @@ public class VoteThrottleService {
 	private final ConcurrentHashMap<String, LogState> logStates = new ConcurrentHashMap<String, LogState>();
 	private final ConcurrentHashMap<String, ThrottleState> throttleStates = new ConcurrentHashMap<String, ThrottleState>();
 	private final ConcurrentHashMap<String, ThrottleState> aggregateStates =
-			new ConcurrentHashMap<String, ThrottleState>();
+				new ConcurrentHashMap<String, ThrottleState>();
+	private final ThrottleState[] aggregateOverflowStates = new ThrottleState[AGGREGATE_OVERFLOW_BUCKETS];
 	private final Object logStateLock = new Object();
 	private final Object throttleStateLock = new Object();
 	/* Configured tunnel remotes are finite, trusted aggregate identities. */
@@ -65,9 +67,25 @@ public class VoteThrottleService {
 		}
 		synchronized (throttleStateLock) {
 			if (aggregateKey != null && throttleStates.get(key) == null)
-				return isBlocked(aggregateStates.get(aggregateKey));
+				return isBlocked(getAggregateState(aggregateKey));
 		}
 		return false;
+	}
+
+	public String blockedKey(String key, String aggregateKey) {
+		if (config == null || !config.enabled) {
+			return key;
+		}
+		synchronized (throttleStateLock) {
+			ThrottleState direct = throttleStates.get(key);
+			if (isBlocked(direct)) {
+				return key;
+			}
+			if (aggregateKey != null && direct == null && isBlocked(getAggregateState(aggregateKey))) {
+				return aggregateKey;
+			}
+			return key;
+		}
 	}
 
 	private boolean isBlocked(ThrottleState state) {
@@ -87,7 +105,7 @@ public class VoteThrottleService {
 		long retry = retryAfterMs(state);
 		synchronized (throttleStateLock) {
 			if (aggregateKey != null && throttleStates.get(key) == null)
-				retry = Math.max(retry, retryAfterMs(aggregateStates.get(aggregateKey)));
+				retry = Math.max(retry, retryAfterMs(getAggregateState(aggregateKey)));
 		}
 		return retry;
 	}
@@ -144,8 +162,15 @@ public class VoteThrottleService {
 	}
 
 	public void success(String key) {
+		success(key, null);
+	}
+
+	public void success(String key, String aggregateKey) {
 		synchronized (throttleStateLock) {
 			ThrottleState state = throttleStates.get(key);
+			if (state == null && aggregateKey != null) {
+				state = getAggregateState(aggregateKey);
+			}
 			if (state != null) {
 				state.failures = 0;
 				state.windowStartMs = System.currentTimeMillis();
@@ -213,13 +238,33 @@ public class VoteThrottleService {
 			return state;
 		}
 		if (!trimAggregateStates(now)) {
-			return null;
+			return getOverflowAggregateState(key, now);
 		}
 
 		ThrottleState created = new ThrottleState();
 		created.windowStartMs = now;
 		ThrottleState existing = aggregateStates.putIfAbsent(key, created);
 		return existing == null ? created : existing;
+	}
+
+	private ThrottleState getAggregateState(String key) {
+		ThrottleState state = aggregateStates.get(key);
+		if (state != null) {
+			return state;
+		}
+		return aggregateStates.size() >= MAX_TRACKED_KEYS
+				? aggregateOverflowStates[Math.floorMod(key.hashCode(), AGGREGATE_OVERFLOW_BUCKETS)] : null;
+	}
+
+	private ThrottleState getOverflowAggregateState(String key, long now) {
+		int index = Math.floorMod(key.hashCode(), AGGREGATE_OVERFLOW_BUCKETS);
+		ThrottleState state = aggregateOverflowStates[index];
+		if (state == null) {
+			state = new ThrottleState();
+			state.windowStartMs = now;
+			aggregateOverflowStates[index] = state;
+		}
+		return state;
 	}
 
 	private void trimLogStates(long now) {

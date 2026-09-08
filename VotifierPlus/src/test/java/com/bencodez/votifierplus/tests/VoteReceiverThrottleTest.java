@@ -144,6 +144,20 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testSuccessResetsOverflowAggregateForDirectPeer() {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, false);
+		}
+		String key = "tunnel:direct";
+		service.fail(key, key, false, false);
+		service.success(key, key);
+		service.fail(key, key, false, false);
+		assertFalse(service.isBlocked(key, key));
+	}
+
+	@Test
 	public void testWindowExpiryResetsFailureCounter() throws Exception {
 		VoteThrottleService service = new VoteThrottleService(
 				cfg("150ms", 2, "1s", 2, "1s", false, 999, "1s"));
@@ -319,6 +333,18 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testAggregateBlockUsesAggregateLogKey() {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 1, "10s", 1, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, false);
+		}
+		String aggregateKey = "tunnel:proxy";
+		service.fail("ip:rotated", aggregateKey, false, false);
+		assertEquals(aggregateKey, service.blockedKey("ip:another", aggregateKey));
+	}
+
+	@Test
 	public void testFullMapPreservesInWindowCountersAndUsesAggregateTunnel() throws Exception {
 		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("proxy"), "5s", 2, "10s", 2,
 				"10s", false, 999, "1s", "60s");
@@ -378,6 +404,40 @@ public class VoteReceiverThrottleTest {
 		assertEquals(0L, service.retryAfterMs("ip:new", "tunnel:proxy"));
 		service.fail("ip:new", "tunnel:proxy", false, true);
 		assertTrue(service.isBlocked("ip:new", "tunnel:proxy"));
+	}
+
+	@Test
+	public void testAggregateCapacityUsesBoundedOverflowBuckets() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:" + i, false, false);
+		}
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:overflow:" + i, "remote:" + i, false, false);
+		}
+		String aggregateKey = "remote:overflow";
+		service.fail("ip:new", aggregateKey, false, false);
+		service.fail("ip:new", aggregateKey, false, false);
+		assertTrue(service.isBlocked("ip:new", aggregateKey));
+		assertEquals(4096, mapSize(service, "aggregateStates"));
+	}
+
+	@Test
+	public void testOverflowBucketIsIgnoredAfterAggregateCapacityRecovers() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) service.fail("ip:" + i, false, false);
+		for (int i = 0; i < 4096; i++) service.fail("ip:overflow:" + i, "remote:" + i, false, false);
+		assertEquals("Aa".hashCode(), "BB".hashCode());
+		service.fail("ip:overflow-a", "Aa", false, false);
+		service.fail("ip:overflow-a", "Aa", false, false);
+		assertTrue(service.isBlocked("ip:overflow-b", "BB"));
+
+		Map<?, ?> aggregates = stateMap(service, "aggregateStates");
+		aggregates.remove(aggregates.keySet().iterator().next());
+		assertFalse(service.isBlocked("ip:overflow-b", "BB"),
+				"stale overflow state must not shadow a newly available aggregate slot");
 	}
 
 	private static ThrottleConfig tunnelCfg(String... remoteIps) {
