@@ -348,7 +348,9 @@ public class VoteThrottleService {
 
 	private void trimLogStates(long now) {
 		if (logStates.size() < MAX_TRACKED_KEYS) {
-			nextLogSweepMs = 0L;
+			/* A miss immediately adds one entry. Preserve the cached deadline when
+			 * that insertion will refill the map. */
+			if (logStates.size() < MAX_TRACKED_KEYS - 1) nextLogSweepMs = 0L;
 			return;
 		}
 		long expiry = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
@@ -371,10 +373,9 @@ public class VoteThrottleService {
 		}
 		if (logStates.size() >= MAX_TRACKED_KEYS) {
 			removeOneIfFull(logStates);
-			nextLogSweepMs = nextSweep;
-		} else {
-			nextLogSweepMs = 0L;
 		}
+		/* Even when reclamation made one slot, allowLog immediately refills it. */
+		nextLogSweepMs = nextSweep == Long.MAX_VALUE ? 0L : nextSweep;
 	}
 
 	private boolean trimThrottleStates(long now) {

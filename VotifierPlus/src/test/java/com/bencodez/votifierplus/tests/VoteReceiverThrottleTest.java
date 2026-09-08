@@ -340,6 +340,33 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testReclaimedLogSlotRetainsNextExpiryAfterImmediateRefill() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) {
+			service.allowLog("log:reclaim:" + i, "message");
+		}
+
+		Map<?, ?> logs = stateMap(service, "logStates");
+		Object expired = logs.get("log:reclaim:0");
+		Field lastLogField = expired.getClass().getDeclaredField("lastLogMs");
+		lastLogField.setAccessible(true);
+		lastLogField.setLong(expired, System.currentTimeMillis() - 6000L);
+		Field nextSweepField = VoteThrottleService.class.getDeclaredField("nextLogSweepMs");
+		nextSweepField.setAccessible(true);
+		nextSweepField.setLong(service, 0L);
+
+		service.allowLog("log:reclaim:first-miss", "message");
+		long nextSweep = longField(service, "nextLogSweepMs");
+		assertTrue(nextSweep > System.currentTimeMillis());
+		service.allowLog("log:reclaim:second-miss", "message");
+
+		assertEquals(nextSweep, longField(service, "nextLogSweepMs"),
+				"the refill after reclamation must retain the next active expiry");
+		assertEquals(4096, logs.size());
+	}
+
+	@Test
 	public void testOverflowDoesNotEvictActiveBan() throws Exception {
 		VoteThrottleService service = new VoteThrottleService(
 				cfg("5s", 1, "10s", 1, "10s", true, 1, "60s"));
