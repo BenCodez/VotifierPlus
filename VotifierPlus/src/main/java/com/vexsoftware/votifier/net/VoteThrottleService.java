@@ -174,7 +174,10 @@ public class VoteThrottleService {
 			}
 			/* A proxied success must not clear failures shared by other identities. */
 			if (aggregateKey != null && key.equals(aggregateKey)) {
-				state = getAggregateState(aggregateKey);
+				// Only a dedicated aggregate belongs to this identity. An overflow
+				// bucket is deliberately shared by many identities and must not be
+				// reset by one successful request.
+				state = aggregateStates.get(aggregateKey);
 				if (state != null) {
 					state.failures = 0;
 					state.windowStartMs = System.currentTimeMillis();

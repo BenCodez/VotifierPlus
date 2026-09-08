@@ -474,6 +474,21 @@ public class VoteReceiverThrottleTest {
 				"stale overflow state must not shadow a newly available aggregate slot");
 	}
 
+	@Test
+	public void testDirectSuccessDoesNotResetSharedAggregateOverflowBucket() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		for (int i = 0; i < 4096; i++) service.fail("ip:" + i, false, false);
+		for (int i = 0; i < 4096; i++) service.fail("ip:overflow:" + i, "remote:" + i, false, false);
+		assertEquals("Aa".hashCode(), "BB".hashCode());
+		service.fail("ip:overflow-a", "Aa", false, false);
+		service.success("Aa", "Aa");
+		service.fail("ip:overflow-b", "BB", false, false);
+
+		assertTrue(service.isBlocked("ip:overflow-c", "BB"),
+				"a direct success must not erase failures belonging to a shared overflow bucket");
+	}
+
 	private static ThrottleConfig tunnelCfg(String... remoteIps) {
 		return new ThrottleConfig(true, new java.util.HashSet<String>(java.util.Arrays.asList(remoteIps)), "5s", 1,
 				"10s", 1, "10s", true, 1, "60s", "60s");
