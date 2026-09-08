@@ -66,7 +66,7 @@ public class VoteThrottleService {
 			return true;
 		}
 		synchronized (throttleStateLock) {
-			if (aggregateKey != null && throttleStates.get(key) == null)
+			if (aggregateKey != null)
 				return isBlocked(getAggregateState(aggregateKey));
 		}
 		return false;
@@ -81,7 +81,7 @@ public class VoteThrottleService {
 			if (isBlocked(direct)) {
 				return key;
 			}
-			if (aggregateKey != null && direct == null && isBlocked(getAggregateState(aggregateKey))) {
+			if (aggregateKey != null && isBlocked(getAggregateState(aggregateKey))) {
 				return aggregateKey;
 			}
 			return key;
@@ -104,7 +104,7 @@ public class VoteThrottleService {
 		ThrottleState state = throttleStates.get(key);
 		long retry = retryAfterMs(state);
 		synchronized (throttleStateLock) {
-			if (aggregateKey != null && throttleStates.get(key) == null)
+			if (aggregateKey != null)
 				retry = Math.max(retry, retryAfterMs(getAggregateState(aggregateKey)));
 		}
 		return retry;
@@ -168,12 +168,17 @@ public class VoteThrottleService {
 	public void success(String key, String aggregateKey) {
 		synchronized (throttleStateLock) {
 			ThrottleState state = throttleStates.get(key);
-			if (state == null && aggregateKey != null) {
-				state = getAggregateState(aggregateKey);
-			}
 			if (state != null) {
 				state.failures = 0;
 				state.windowStartMs = System.currentTimeMillis();
+			}
+			/* A proxied success must not clear failures shared by other identities. */
+			if (aggregateKey != null && key.equals(aggregateKey)) {
+				state = getAggregateState(aggregateKey);
+				if (state != null) {
+					state.failures = 0;
+					state.windowStartMs = System.currentTimeMillis();
+				}
 			}
 		}
 	}

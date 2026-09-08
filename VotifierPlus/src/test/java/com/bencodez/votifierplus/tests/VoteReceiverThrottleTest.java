@@ -345,6 +345,40 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testAggregateBlockAppliesToExistingPrimaryIdentity() {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		String primaryKey = "ip:existing";
+		String aggregateKey = "tunnel:proxy";
+		service.fail(primaryKey, false, false);
+		for (int i = 0; i < 4095; i++) {
+			service.fail("ip:filler:" + i, false, false);
+		}
+		service.fail("ip:proxied", aggregateKey, false, false);
+		service.fail("ip:proxied", aggregateKey, false, false);
+
+		assertTrue(service.isBlocked(primaryKey, aggregateKey));
+		assertEquals(aggregateKey, service.blockedKey(primaryKey, aggregateKey));
+		assertTrue(service.retryAfterMs(primaryKey, aggregateKey) > 0);
+	}
+
+	@Test
+	public void testProxiedSuccessDoesNotClearSharedAggregateFailures() {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
+		String aggregateKey = "tunnel:proxy";
+		for (int i = 0; i < 4096; i++) {
+			service.fail("ip:filler:" + i, false, false);
+		}
+		service.fail("ip:proxied", aggregateKey, false, false);
+		service.success("ip:proxied", aggregateKey);
+		service.fail("ip:rotated", aggregateKey, false, false);
+
+		assertTrue(service.isBlocked("ip:another", aggregateKey),
+				"a proxied success must not erase another identity's aggregate failure");
+	}
+
+	@Test
 	public void testFullMapPreservesInWindowCountersAndUsesAggregateTunnel() throws Exception {
 		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("proxy"), "5s", 2, "10s", 2,
 				"10s", false, 999, "1s", "60s");
