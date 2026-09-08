@@ -617,6 +617,35 @@ public class VoteReceiverThrottleTest {
 	}
 
 	@Test
+	public void testReclaimedPrimarySlotRetainsNextExpiryAfterImmediateRefill() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 999, "10s", 999, "10s", false, 999, "1s"));
+		for (int index = 0; index < 4096; index++) service.fail("ip:reclaim:" + index, false, true);
+
+		Map<?, ?> states = stateMap(service, "throttleStates");
+		Object expired = states.get("ip:reclaim:0");
+		Field windowStartField = expired.getClass().getDeclaredField("windowStartMs");
+		windowStartField.setAccessible(true);
+		long laterExistingExpiry = System.currentTimeMillis() + 60_000L;
+		for (Object state : states.values()) windowStartField.setLong(state, laterExistingExpiry);
+		windowStartField.setLong(expired, System.currentTimeMillis() - 6000L);
+		Field nextSweepField = VoteThrottleService.class.getDeclaredField("nextThrottleSweepMs");
+		nextSweepField.setAccessible(true);
+		nextSweepField.setLong(service, 0L);
+
+		service.fail("ip:reclaim:first-miss", false, true);
+		long nextSweep = longField(service, "nextThrottleSweepMs");
+		assertTrue(nextSweep > System.currentTimeMillis());
+		assertTrue(nextSweep < laterExistingExpiry,
+				"the newly inserted state's earlier expiry must bound the retained deadline");
+		service.fail("ip:reclaim:second-miss", false, true);
+
+		assertEquals(nextSweep, longField(service, "nextThrottleSweepMs"),
+				"the refill after reclamation must retain the next active expiry");
+		assertEquals(4096, states.size());
+	}
+
+	@Test
 	public void testAggregateLookupReclaimsExpiredEntryBeforeUsingOverflowBucket() throws Exception {
 		VoteThrottleService service = new VoteThrottleService(
 				cfg("5s", 2, "10s", 2, "10s", false, 999, "1s"));
@@ -640,6 +669,55 @@ public class VoteReceiverThrottleTest {
 		assertFalse(service.isAggregateBlocked("remote:not-yet-tracked"));
 		assertEquals(4095, aggregates.size(),
 				"an expired aggregate must be reclaimed before an overflow bucket is consulted");
+	}
+
+	@Test
+	public void testReclaimedAggregateSlotRetainsNextExpiryAfterImmediateRefill() throws Exception {
+		VoteThrottleService service = new VoteThrottleService(
+				cfg("5s", 999, "10s", 999, "10s", false, 999, "1s"));
+		for (int index = 0; index < 4096; index++) {
+			service.fail("ip:aggregate-primary-fill:" + index, false, true);
+		}
+		for (int index = 0; index < 4096; index++) {
+			service.fail("ip:aggregate-reclaim:" + index, "remote:aggregate-reclaim:" + index, false, false);
+		}
+
+		Map<?, ?> aggregates = stateMap(service, "aggregateStates");
+		Object expired = aggregates.get("remote:aggregate-reclaim:0");
+		Field windowStartField = expired.getClass().getDeclaredField("windowStartMs");
+		windowStartField.setAccessible(true);
+		long laterExistingExpiry = System.currentTimeMillis() + 60_000L;
+		for (Object state : aggregates.values()) windowStartField.setLong(state, laterExistingExpiry);
+		windowStartField.setLong(expired, System.currentTimeMillis() - 6000L);
+		Field nextSweepField = VoteThrottleService.class.getDeclaredField("nextAggregateSweepMs");
+		nextSweepField.setAccessible(true);
+		nextSweepField.setLong(service, 0L);
+
+		service.fail("ip:aggregate-reclaim:first-miss", "remote:aggregate-reclaim:first-miss", false, false);
+		long nextSweep = longField(service, "nextAggregateSweepMs");
+		assertTrue(nextSweep > System.currentTimeMillis());
+		assertTrue(nextSweep < laterExistingExpiry,
+				"the newly inserted aggregate's earlier expiry must bound the retained deadline");
+		service.fail("ip:aggregate-reclaim:second-miss", "remote:aggregate-reclaim:second-miss", false, false);
+
+		assertEquals(nextSweep, longField(service, "nextAggregateSweepMs"),
+				"the aggregate refill after reclamation must retain the next active expiry");
+		assertEquals(4096, aggregates.size());
+	}
+
+	@Test
+	public void testConfiguredAggregateIdentitiesRemainBoundedAndCacheSaturation() throws Exception {
+		java.util.Set<String> configuredRemotes = new java.util.HashSet<String>();
+		for (int index = 0; index < 5000; index++) configuredRemotes.add("192.0.2." + index);
+		VoteThrottleService service = new VoteThrottleService(
+				new ThrottleConfig(true, configuredRemotes, "5s", 999, "10s", 999, "10s", false, 999, "1s", "1s"));
+
+		assertEquals(4096, mapSize(service, "aggregateStates"));
+		assertFalse(service.isAggregateBlocked("remote:unknown"));
+		assertEquals(Long.MAX_VALUE, longField(service, "nextAggregateSweepMs"),
+				"a map containing only pinned configured identities must not be rescanned on every miss");
+		assertFalse(service.isAggregateBlocked("remote:another-unknown"));
+		assertEquals(4096, mapSize(service, "aggregateStates"));
 	}
 
 	private static ThrottleConfig tunnelCfg(String... remoteIps) {

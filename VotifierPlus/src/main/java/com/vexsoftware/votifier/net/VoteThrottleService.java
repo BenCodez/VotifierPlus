@@ -44,6 +44,7 @@ public class VoteThrottleService {
 		this.config = config;
 		if (config != null) {
 			for (String remoteIp : config.tunnelRemoteIps) {
+				if (aggregateStates.size() >= MAX_TRACKED_KEYS) break;
 				aggregateStates.put("tunnel:" + remoteIp, new ThrottleState());
 			}
 		}
@@ -300,6 +301,9 @@ public class VoteThrottleService {
 			created.windowStartMs = System.currentTimeMillis();
 			ThrottleState existing = throttleStates.putIfAbsent(key, created);
 			state = existing == null ? created : existing;
+			if (existing == null && throttleStates.size() >= MAX_TRACKED_KEYS) {
+				nextThrottleSweepMs = earlierDeadline(nextThrottleSweepMs, stateExpiry(created));
+			}
 		}
 		return state;
 	}
@@ -316,7 +320,14 @@ public class VoteThrottleService {
 		ThrottleState created = new ThrottleState();
 		created.windowStartMs = now;
 		ThrottleState existing = aggregateStates.putIfAbsent(key, created);
+		if (existing == null && aggregateStates.size() >= MAX_TRACKED_KEYS) {
+			nextAggregateSweepMs = earlierDeadline(nextAggregateSweepMs, stateExpiry(created));
+		}
 		return existing == null ? created : existing;
+	}
+
+	private static long earlierDeadline(long current, long candidate) {
+		return current == 0L ? candidate : Math.min(current, candidate);
 	}
 
 	private ThrottleState getAggregateState(String key) {
@@ -392,7 +403,9 @@ public class VoteThrottleService {
 			} else nextSweep = Math.min(nextSweep, stateExpiry(state));
 		}
 		if (throttleStates.size() < MAX_TRACKED_KEYS) {
-			nextThrottleSweepMs = 0L;
+			/* Keep the earliest active expiry: the caller immediately refills the
+			 * reclaimed slot, and the map can become saturated again before it. */
+			nextThrottleSweepMs = nextSweep == Long.MAX_VALUE ? 0L : nextSweep;
 			return true;
 		}
 		nextThrottleSweepMs = nextSweep;
@@ -416,7 +429,11 @@ public class VoteThrottleService {
 			} else nextSweep = Math.min(nextSweep, stateExpiry(state));
 		}
 		boolean available = aggregateStates.size() < MAX_TRACKED_KEYS;
-		nextAggregateSweepMs = available ? 0L : nextSweep;
+		/* As with primary states, preserve the deadline across the immediate
+		 * insertion that consumes a reclaimed aggregate slot. */
+		nextAggregateSweepMs = nextSweep == Long.MAX_VALUE
+				? available ? 0L : Long.MAX_VALUE
+				: nextSweep;
 		return available;
 	}
 
