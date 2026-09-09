@@ -569,6 +569,30 @@ public class VoteReceiverTest {
 	}
 
 	@Test
+	public void testV2VoteRejectsNullAddressAsInvalidVote() throws Exception {
+		JsonObject inner = validInnerVote();
+		inner.add("address", null);
+
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
+				() -> parser.parse(v2Payload(inner), VoteProtocolVersion.V2, receiver, "test",
+						receiver.getChallenge()));
+
+		assertTrue(exception.getMessage().contains("invalid field 'address'"));
+	}
+
+	@Test
+	public void testV2VoteRejectsObjectAddressAsInvalidVote() throws Exception {
+		JsonObject inner = validInnerVote();
+		inner.add("address", new JsonObject());
+
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
+				() -> parser.parse(v2Payload(inner), VoteProtocolVersion.V2, receiver, "test",
+						receiver.getChallenge()));
+
+		assertTrue(exception.getMessage().contains("invalid field 'address'"));
+	}
+
+	@Test
 	public void testV2VoteInvalidChallenge() throws Exception {
 		JsonObject inner = new JsonObject();
 		inner.addProperty("serviceName", "votifier.bencodez.com");
@@ -669,6 +693,24 @@ public class VoteReceiverTest {
 		assertEquals("127.0.0.1", vote.getAddress());
 		assertEquals("TestTimestamp", vote.getTimeStamp());
 		assertEquals("192.168.1.1", vote.getSourceAddress());
+	}
+
+	private JsonObject validInnerVote() {
+		JsonObject inner = new JsonObject();
+		inner.addProperty("serviceName", "votifier.bencodez.com");
+		inner.addProperty("username", "testUser");
+		inner.addProperty("address", "127.0.0.1");
+		inner.addProperty("timestamp", "TestTimestamp");
+		inner.addProperty("challenge", receiver.getChallenge());
+		return inner;
+	}
+
+	private PushbackInputStream v2Payload(JsonObject inner) {
+		JsonObject outer = new JsonObject();
+		outer.addProperty("payload", inner.toString());
+		outer.addProperty("signature", "AA==");
+		return new PushbackInputStream(
+				new ByteArrayInputStream(outer.toString().getBytes(StandardCharsets.UTF_8)), 512);
 	}
 
 	private byte[] createSignedV2Payload(String username) throws Exception {

@@ -10,6 +10,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyPair;
@@ -260,35 +261,53 @@ public class VoteConnectionHandlerTest {
 	}
 
 	@Test
-	public void testHandleBlockedConnectionReturnsNull() throws Exception {
+	public void testProxyCanProvideClientIdentityBeforeThrottleDecision() throws Exception {
 		receiver.setUseTokens(false);
-		ThrottleConfig config = new ThrottleConfig(true, Collections.<String>emptySet(), "10s", 1, "30s", 1, "30s",
-				false, 999, "1s", "60s");
+		ThrottleConfig config = new ThrottleConfig(true, Collections.<String>emptySet(), "10s", 1, "30s", 1,
+				"30s", false, 999, "1s", "60s");
 		VoteThrottleService throttleService = new VoteThrottleService(config);
 		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
-
-		throttleService.fail("tunnel:127.0.0.1", false, false);
-		assertTrue(throttleService.isBlocked("tunnel:127.0.0.1"));
+		throttleService.fail("tunnel:127.0.0.1", true, false);
 
 		try (ServerSocket serverSocket = new ServerSocket(0);
 				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
 				Socket accepted = serverSocket.accept()) {
+			Future<Vote> future = executor.submit(() -> handler.handle(accepted));
+			BufferedReader reader = new BufferedReader(
+					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
+			assertEquals("VOTIFIER 1", reader.readLine(), "Shared tunnels must reach proxy-header detection");
+			client.close();
+			assertNull(future.get());
+		}
+	}
 
-			Future<Vote> future = executor.submit(new Callable<Vote>() {
-				@Override
-				public Vote call() {
-					return handler.handle(accepted);
-				}
-			});
+	@Test
+	public void testAggregateBlockRejectsBeforeHandshakeAndPayloadWait() throws Exception {
+		receiver.setUseTokens(false);
+		ThrottleConfig config = new ThrottleConfig(true, Collections.singleton("127.0.0.1"), "5s", 1, "10s", 1,
+				"10s", false, 999, "1s", "60s");
+		VoteThrottleService throttleService = new VoteThrottleService(config);
+		for (int i = 0; i < 4096; i++) {
+			throttleService.fail("ip:filler:" + i, false, true);
+		}
+		throttleService.fail("ip:blocked", "tunnel:127.0.0.1", false, true);
+		assertTrue(throttleService.isAggregateBlocked("tunnel:127.0.0.1"));
 
+		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
+		try (ServerSocket serverSocket = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
+				Socket accepted = serverSocket.accept()) {
+			client.setSoTimeout(500);
+			Future<Vote> future = executor.submit(() -> handler.handle(accepted));
 			BufferedReader clientReader = new BufferedReader(
 					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
 
-			String handshake = clientReader.readLine();
-			assertEquals("VOTIFIER 1", handshake);
-
-			Vote vote = future.get();
-			assertNull(vote);
+			try {
+				assertNull(clientReader.readLine(), "an aggregate-blocked remote must not receive a handshake");
+			} catch (SocketTimeoutException ex) {
+				throw new AssertionError("aggregate rejection must happen before waiting for payload", ex);
+			}
+			assertNull(future.get(1, java.util.concurrent.TimeUnit.SECONDS));
 		}
 	}
 
@@ -451,6 +470,44 @@ public class VoteConnectionHandlerTest {
 			String okResponse = clientReader.readLine();
 			assertNotNull(okResponse);
 			assertTrue(okResponse.contains("\"status\":\"ok\""));
+		}
+	}
+
+	@Test
+	public void testNonTunnelProxyOverflowUsesRemoteAggregate() throws Exception {
+		receiver.setUseTokens(false);
+		ThrottleConfig config = new ThrottleConfig(true, Collections.<String>emptySet(), "5s", 1, "10s", 1,
+				"10s", false, 999, "1s", "60s");
+		VoteThrottleService throttleService = new VoteThrottleService(config);
+		for (int i = 0; i < 4096; i++) {
+			throttleService.fail("ip:" + i, false, true);
+		}
+		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
+
+		try (ServerSocket serverSocket = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", serverSocket.getLocalPort());
+				Socket accepted = serverSocket.accept()) {
+
+			Future<Vote> future = executor.submit(new Callable<Vote>() {
+				@Override
+				public Vote call() {
+					return handler.handle(accepted);
+				}
+			});
+
+			BufferedReader clientReader = new BufferedReader(
+					new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
+			OutputStream clientOut = client.getOutputStream();
+			assertEquals("VOTIFIER 1", clientReader.readLine());
+
+			clientOut.write("PROXY TCP4 203.0.113.10 127.0.0.1 1234 8192\r\n"
+					.getBytes(StandardCharsets.US_ASCII));
+			clientOut.write(new byte[256]);
+			clientOut.flush();
+			client.shutdownOutput();
+
+			assertNull(future.get());
+			assertTrue(throttleService.isBlocked("ip:203.0.113.10", "tunnel:127.0.0.1"));
 		}
 	}
 

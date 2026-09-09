@@ -10,6 +10,8 @@ import java.net.SocketException;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class VoteThrottleService {
+	private static final int MAX_TRACKED_KEYS = 4096;
+	private static final int AGGREGATE_OVERFLOW_BUCKETS = 64;
 
 	private static final class LogState {
 		private volatile long lastLogMs;
@@ -21,14 +23,34 @@ public class VoteThrottleService {
 		private volatile int failures;
 		private volatile long throttledUntilMs;
 		private volatile long bannedUntilMs;
+		/* Once a proxied identity contributes to this aggregate, direct successes
+		 * must not treat the aggregate as private to the tunnel remote. */
+		private volatile boolean sharedByProxiedIdentity;
 	}
 
 	private final ThrottleConfig config;
 	private final ConcurrentHashMap<String, LogState> logStates = new ConcurrentHashMap<String, LogState>();
 	private final ConcurrentHashMap<String, ThrottleState> throttleStates = new ConcurrentHashMap<String, ThrottleState>();
+	private final ConcurrentHashMap<String, ThrottleState> aggregateStates =
+				new ConcurrentHashMap<String, ThrottleState>();
+	private final ThrottleState[] aggregateOverflowStates = new ThrottleState[AGGREGATE_OVERFLOW_BUCKETS];
+	private final Object logStateLock = new Object();
+	private final Object throttleStateLock = new Object();
+	/* Guarded by logStateLock; avoid O(n) sweeps while all entries are active. */
+	private long nextLogSweepMs;
+	/* Guarded by throttleStateLock; avoid O(n) sweeps while all entries are known active. */
+	private long nextThrottleSweepMs;
+	private long nextAggregateSweepMs;
+	/* Configured tunnel remotes are finite, trusted aggregate identities. */
 
 	public VoteThrottleService(ThrottleConfig config) {
 		this.config = config;
+		if (config != null) {
+			for (String remoteIp : config.tunnelRemoteIps) {
+				if (aggregateStates.size() >= MAX_TRACKED_KEYS) break;
+				aggregateStates.put("tunnel:" + remoteIp, new ThrottleState());
+			}
+		}
 	}
 
 	public ThrottleConfig getConfig() {
@@ -40,89 +62,226 @@ public class VoteThrottleService {
 	}
 
 	public boolean isBlocked(String key) {
+		return isBlocked(key, null);
+	}
+
+	/**
+	 * Checks only the aggregate identity, without consulting a per-client state.
+	 * This is used before proxy headers are read so an already-blocked remote can
+	 * be rejected without making a primary tunnel state apply to every proxied
+	 * client identity.
+	 */
+	public boolean isAggregateBlocked(String aggregateKey) {
+		if (config == null || !config.enabled || aggregateKey == null) {
+			return false;
+		}
+
+		synchronized (throttleStateLock) {
+			return isBlocked(getAggregateState(aggregateKey));
+		}
+	}
+
+	public long aggregateRetryAfterMs(String aggregateKey) {
+		if (config == null || !config.enabled || aggregateKey == null) {
+			return 0L;
+		}
+
+		synchronized (throttleStateLock) {
+			return retryAfterMs(getAggregateState(aggregateKey));
+		}
+	}
+
+	public String aggregateBlockedKey(String aggregateKey) {
+		if (aggregateKey == null) return null;
+		synchronized (throttleStateLock) {
+			if (aggregateStates.containsKey(aggregateKey)) return aggregateKey;
+			return "aggregate-overflow:"
+					+ Math.floorMod(aggregateKey.hashCode(), AGGREGATE_OVERFLOW_BUCKETS);
+		}
+	}
+
+	public boolean isBlocked(String key, String aggregateKey) {
 		if (config == null || !config.enabled) {
 			return false;
 		}
 
-		ThrottleState state = throttleStates.get(key);
+		synchronized (throttleStateLock) {
+			ThrottleState state = throttleStates.get(key);
+			if (isBlocked(state)) return true;
+			if (aggregateKey != null)
+				return isBlocked(getAggregateState(aggregateKey));
+		}
+		return false;
+	}
+
+	public String blockedKey(String key, String aggregateKey) {
+		if (config == null || !config.enabled) {
+			return key;
+		}
+		synchronized (throttleStateLock) {
+			ThrottleState direct = throttleStates.get(key);
+			if (isBlocked(direct)) {
+				return key;
+			}
+			if (aggregateKey != null && isBlocked(getAggregateState(aggregateKey))) {
+				if (aggregateStates.containsKey(aggregateKey)) return aggregateKey;
+				return "aggregate-overflow:"
+						+ Math.floorMod(aggregateKey.hashCode(), AGGREGATE_OVERFLOW_BUCKETS);
+			}
+			return key;
+		}
+	}
+
+	private boolean isBlocked(ThrottleState state) {
 		if (state == null) {
 			return false;
 		}
-
 		long now = System.currentTimeMillis();
 		return state.bannedUntilMs > now || state.throttledUntilMs > now;
 	}
 
 	public long retryAfterMs(String key) {
+		return retryAfterMs(key, null);
+	}
+
+	public long retryAfterMs(String key, String aggregateKey) {
 		ThrottleState state = throttleStates.get(key);
+		long retry = retryAfterMs(state);
+		synchronized (throttleStateLock) {
+			if (aggregateKey != null)
+				retry = Math.max(retry, retryAfterMs(getAggregateState(aggregateKey)));
+		}
+		return retry;
+	}
+
+	private long retryAfterMs(ThrottleState state) {
 		if (state == null) {
 			return 0L;
 		}
-
 		long now = System.currentTimeMillis();
 		return Math.max(state.bannedUntilMs, state.throttledUntilMs) - now;
 	}
 
 	public void fail(String key, boolean tunnelMode, boolean realIpKnown) {
+		fail(key, null, tunnelMode, realIpKnown);
+	}
+
+	public void fail(String key, String aggregateKey, boolean tunnelMode, boolean realIpKnown) {
 		if (config == null || !config.enabled) {
 			return;
 		}
 
-		long now = System.currentTimeMillis();
-		ThrottleState state = getThrottleState(key);
+		synchronized (throttleStateLock) {
+			long now = System.currentTimeMillis();
+			boolean aggregate = false;
+			ThrottleState state = throttleStates.get(key);
+			if (state == null && aggregateKey != null) {
+				ThrottleState existingAggregate = getAggregateState(aggregateKey);
+				if (hasActiveFailures(existingAggregate, now)) {
+					state = existingAggregate;
+					aggregate = true;
+				}
+			}
+			if (state == null) {
+				state = getThrottleState(key);
+			}
+			if (state == null && aggregateKey != null) {
+				state = getAggregateThrottleState(aggregateKey, now);
+				aggregate = state != null;
+			}
+			if (state == null) {
+				return;
+			}
+			if (aggregate && aggregateKey != null && !key.equals(aggregateKey)) {
+				state.sharedByProxiedIdentity = true;
+			}
 
-		if (now - state.windowStartMs > config.windowMs) {
-			state.windowStartMs = now;
-			state.failures = 0;
-		}
+			if (now - state.windowStartMs > config.windowMs) {
+				state.windowStartMs = now;
+				state.failures = 0;
+			}
 
-		state.failures++;
+			state.failures++;
 
-		if (config.perClientBanEnabled && realIpKnown && state.failures >= config.perClientBanFailures) {
-			state.bannedUntilMs = now + config.perClientBanForMs;
-			return;
-		}
+			if (!aggregate && config.perClientBanEnabled && realIpKnown
+					&& state.failures >= config.perClientBanFailures) {
+				state.bannedUntilMs = now + config.perClientBanForMs;
+				return;
+			}
 
-		int threshold = tunnelMode ? config.tunnelFailures : config.failures;
-		long duration = tunnelMode ? config.tunnelThrottleForMs : config.throttleForMs;
+			int threshold = tunnelMode ? config.tunnelFailures : config.failures;
+			long duration = tunnelMode ? config.tunnelThrottleForMs : config.throttleForMs;
 
-		if (state.failures >= threshold) {
-			state.throttledUntilMs = now + duration;
+			if (state.failures >= threshold) {
+				state.throttledUntilMs = now + duration;
+			}
 		}
 	}
 
+	private boolean hasActiveFailures(ThrottleState state, long now) {
+		return state != null && (state.bannedUntilMs > now || state.throttledUntilMs > now
+				|| state.failures > 0 && now - state.windowStartMs <= config.windowMs);
+	}
+
 	public void success(String key) {
-		ThrottleState state = throttleStates.get(key);
-		if (state != null) {
-			state.failures = 0;
-			state.windowStartMs = System.currentTimeMillis();
+		success(key, null);
+	}
+
+	public void success(String key, String aggregateKey) {
+		synchronized (throttleStateLock) {
+			long now = System.currentTimeMillis();
+			ThrottleState state = throttleStates.get(key);
+			if (state != null) {
+				state.failures = 0;
+				state.windowStartMs = now;
+				if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
+						&& throttleStates.remove(key, state)) {
+					nextThrottleSweepMs = 0L;
+				}
+			}
+			/* A proxied success must not clear failures shared by other identities. */
+			if (aggregateKey != null && key.equals(aggregateKey)) {
+				// Only a dedicated aggregate belongs to this identity. An overflow
+				// bucket is deliberately shared by many identities and must not be
+				// reset by one successful request.
+				state = aggregateStates.get(aggregateKey);
+				if (state != null && !state.sharedByProxiedIdentity) {
+					state.failures = 0;
+					state.windowStartMs = now;
+					if (!isConfiguredAggregateKey(aggregateKey) && state.bannedUntilMs <= now
+							&& state.throttledUntilMs <= now && aggregateStates.remove(aggregateKey, state)) {
+						nextAggregateSweepMs = 0L;
+					}
+				}
+			}
 		}
 	}
 
 	public String allowLog(String key, String msg) {
-		long now = System.currentTimeMillis();
-		long windowMs = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
-
-		LogState state = logStates.get(key);
-		if (state == null) {
-			LogState created = new LogState();
-			LogState existing = logStates.putIfAbsent(key, created);
-			state = existing == null ? created : existing;
-		}
-
-		if (now - state.lastLogMs >= windowMs) {
-			int suppressed = state.suppressed;
-			state.suppressed = 0;
-			state.lastLogMs = now;
-
-			if (suppressed > 0) {
-				return msg + " (suppressed " + suppressed + " similar in last " + windowMs + "ms)";
+		synchronized (logStateLock) {
+			long now = System.currentTimeMillis();
+			long windowMs = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
+			LogState state = logStates.get(key);
+			if (state == null) {
+				trimLogStates(now);
+				state = new LogState();
+				logStates.put(key, state);
 			}
-			return msg;
-		}
 
-		state.suppressed++;
-		return null;
+			if (now - state.lastLogMs >= windowMs) {
+				int suppressed = state.suppressed;
+				state.suppressed = 0;
+				state.lastLogMs = now;
+
+				if (suppressed > 0) {
+					return msg + " (suppressed " + suppressed + " similar in last " + windowMs + "ms)";
+				}
+				return msg;
+			}
+
+			state.suppressed++;
+			return null;
+		}
 	}
 
 	public void logWarning(VoteReceiver receiver, String key, String message) {
@@ -141,11 +300,181 @@ public class VoteThrottleService {
 	private ThrottleState getThrottleState(String key) {
 		ThrottleState state = throttleStates.get(key);
 		if (state == null) {
+			if (!trimThrottleStates(System.currentTimeMillis())) {
+				return null;
+			}
 			ThrottleState created = new ThrottleState();
 			created.windowStartMs = System.currentTimeMillis();
 			ThrottleState existing = throttleStates.putIfAbsent(key, created);
 			state = existing == null ? created : existing;
+			if (existing == null && throttleStates.size() >= MAX_TRACKED_KEYS) {
+				nextThrottleSweepMs = nextThrottleSweepMs == 0L
+						? earliestThrottleExpiry(throttleStates, false)
+						: earlierDeadline(nextThrottleSweepMs, stateExpiry(created));
+			}
 		}
 		return state;
+	}
+
+	private ThrottleState getAggregateThrottleState(String key, long now) {
+		ThrottleState state = aggregateStates.get(key);
+		if (state != null) {
+			return state;
+		}
+		if (!trimAggregateStates(now)) {
+			return getOverflowAggregateState(key, now);
+		}
+
+		ThrottleState created = new ThrottleState();
+		created.windowStartMs = now;
+		ThrottleState existing = aggregateStates.putIfAbsent(key, created);
+		if (existing == null && aggregateStates.size() >= MAX_TRACKED_KEYS) {
+			nextAggregateSweepMs = nextAggregateSweepMs == 0L
+					? earliestThrottleExpiry(aggregateStates, true)
+					: earlierDeadline(nextAggregateSweepMs, stateExpiry(created));
+		}
+		return existing == null ? created : existing;
+	}
+
+	private long earliestThrottleExpiry(ConcurrentHashMap<String, ThrottleState> states,
+			boolean skipConfiguredAggregates) {
+		long earliest = Long.MAX_VALUE;
+		for (java.util.Map.Entry<String, ThrottleState> entry : states.entrySet()) {
+			if (!skipConfiguredAggregates || !isConfiguredAggregateKey(entry.getKey())) {
+				earliest = Math.min(earliest, stateExpiry(entry.getValue()));
+			}
+		}
+		return earliest;
+	}
+
+	private static long earlierDeadline(long current, long candidate) {
+		return current == 0L ? candidate : Math.min(current, candidate);
+	}
+
+	private ThrottleState getAggregateState(String key) {
+		ThrottleState state = aggregateStates.get(key);
+		if (state != null) {
+			return state;
+		}
+		long now = System.currentTimeMillis();
+		if (aggregateStates.size() >= MAX_TRACKED_KEYS && trimAggregateStates(now)) {
+			state = aggregateStates.get(key);
+			if (state != null) {
+				return state;
+			}
+		}
+		return aggregateStates.size() >= MAX_TRACKED_KEYS
+				? aggregateOverflowStates[Math.floorMod(key.hashCode(), AGGREGATE_OVERFLOW_BUCKETS)] : null;
+	}
+
+	private ThrottleState getOverflowAggregateState(String key, long now) {
+		int index = Math.floorMod(key.hashCode(), AGGREGATE_OVERFLOW_BUCKETS);
+		ThrottleState state = aggregateOverflowStates[index];
+		if (state == null) {
+			state = new ThrottleState();
+			state.windowStartMs = now;
+			aggregateOverflowStates[index] = state;
+		}
+		return state;
+	}
+
+	private void trimLogStates(long now) {
+		if (logStates.size() < MAX_TRACKED_KEYS) {
+			/* A miss immediately adds one entry. Preserve the cached deadline when
+			 * that insertion will refill the map. */
+			if (logStates.size() < MAX_TRACKED_KEYS - 1) nextLogSweepMs = 0L;
+			return;
+		}
+		long expiry = config != null ? Math.max(250L, config.logWindowMs) : 60_000L;
+		if (now < nextLogSweepMs) {
+			/* The map is still saturated, so make bounded progress without rescanning it. */
+			removeOneIfFull(logStates);
+			return;
+		}
+
+		long nextSweep = Long.MAX_VALUE;
+		for (java.util.Map.Entry<String, LogState> entry : logStates.entrySet()) {
+			LogState state = entry.getValue();
+			long stateExpiry = state.lastLogMs > Long.MAX_VALUE - expiry ? Long.MAX_VALUE
+					: state.lastLogMs + expiry;
+			if (stateExpiry <= now) {
+				logStates.remove(entry.getKey(), entry.getValue());
+			} else {
+				nextSweep = Math.min(nextSweep, stateExpiry);
+			}
+		}
+		if (logStates.size() >= MAX_TRACKED_KEYS) {
+			removeOneIfFull(logStates);
+		}
+		/* Even when reclamation made one slot, allowLog immediately refills it. */
+		nextLogSweepMs = nextSweep == Long.MAX_VALUE ? 0L : nextSweep;
+	}
+
+	private boolean trimThrottleStates(long now) {
+		if (throttleStates.size() < MAX_TRACKED_KEYS) {
+			return true;
+		}
+		if (now < nextThrottleSweepMs) return false;
+		long nextSweep = Long.MAX_VALUE;
+		for (java.util.Map.Entry<String, ThrottleState> entry : throttleStates.entrySet()) {
+			ThrottleState state = entry.getValue();
+			if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
+					&& now - state.windowStartMs > config.windowMs) {
+				throttleStates.remove(entry.getKey(), state);
+			} else nextSweep = Math.min(nextSweep, stateExpiry(state));
+		}
+		if (throttleStates.size() < MAX_TRACKED_KEYS) {
+			/* Keep the earliest active expiry: the caller immediately refills the
+			 * reclaimed slot, and the map can become saturated again before it. */
+			nextThrottleSweepMs = nextSweep == Long.MAX_VALUE ? 0L : nextSweep;
+			return true;
+		}
+		nextThrottleSweepMs = nextSweep;
+		return false;
+	}
+
+	private boolean trimAggregateStates(long now) {
+		if (aggregateStates.size() < MAX_TRACKED_KEYS) {
+			return true;
+		}
+		if (now < nextAggregateSweepMs) return false;
+		long nextSweep = Long.MAX_VALUE;
+		for (java.util.Map.Entry<String, ThrottleState> entry : aggregateStates.entrySet()) {
+			if (isConfiguredAggregateKey(entry.getKey())) {
+				continue;
+			}
+			ThrottleState state = entry.getValue();
+			if (state.bannedUntilMs <= now && state.throttledUntilMs <= now
+					&& now - state.windowStartMs > config.windowMs) {
+				aggregateStates.remove(entry.getKey(), state);
+			} else nextSweep = Math.min(nextSweep, stateExpiry(state));
+		}
+		boolean available = aggregateStates.size() < MAX_TRACKED_KEYS;
+		/* As with primary states, preserve the deadline across the immediate
+		 * insertion that consumes a reclaimed aggregate slot. */
+		nextAggregateSweepMs = nextSweep == Long.MAX_VALUE
+				? available ? 0L : Long.MAX_VALUE
+				: nextSweep;
+		return available;
+	}
+
+	private long stateExpiry(ThrottleState state) {
+		long windowExpiry = state.windowStartMs > Long.MAX_VALUE - config.windowMs - 1L
+				? Long.MAX_VALUE : state.windowStartMs + config.windowMs + 1L;
+		return Math.max(windowExpiry, Math.max(state.bannedUntilMs, state.throttledUntilMs));
+	}
+
+	private boolean isConfiguredAggregateKey(String key) {
+		return config != null && key.startsWith("tunnel:")
+				&& config.tunnelRemoteIps.contains(key.substring("tunnel:".length()));
+	}
+
+	private static <T> void removeOneIfFull(ConcurrentHashMap<String, T> states) {
+		if (states.size() >= MAX_TRACKED_KEYS) {
+			java.util.Iterator<String> iterator = states.keySet().iterator();
+			if (iterator.hasNext()) {
+				states.remove(iterator.next());
+			}
+		}
 	}
 }
