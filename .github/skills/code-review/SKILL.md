@@ -44,7 +44,19 @@ Confirm current CI/POM requirements. At the time this skill was added:
 mvn -B -f VotifierPlus/pom.xml package
 ```
 
-Record working directory, command, snapshot, exit result, discovered tests, and fresh artifact. Run `git diff --check`. Do not count skipped/zero tests, stale artifacts, or another snapshot as proof. Distinguish introduced failures, reproduced baseline failures, and environmental blockers.
+For a standalone pinned-commit review, validation must run from a detached temporary checkout
+of the requested commit SHA. Resolve and record its first parent, create an isolated temporary
+worktree with `git worktree add --detach`, and run the required build and artifact checks there;
+the currently checked-out worktree and its artifacts cannot provide evidence for that snapshot.
+Run the whitespace check against the exact parent-to-commit range, for example
+`git -C "$review_worktree" diff --check "$parent_sha" "$commit_sha"`. If the request also
+includes local staged, unstaged, or untracked changes, perform separate, explicitly labeled
+overlay checks in the requested overlay checkout/worktree after the pinned-commit evidence is
+complete. Do not substitute an unrelated current-checkout `git diff --check` or build for either
+the pinned range or the requested overlays. Remove the temporary worktree after validation and
+retain the recorded command results and snapshot identifiers.
+
+Record working directory, command, snapshot, exit result, discovered tests, and fresh artifact. For PR/branch reviews, run `git diff --check` on the reviewed range; for standalone reviews, use the parent-to-commit check and any explicitly requested overlay checks described above. Do not count skipped/zero tests, stale artifacts, or another snapshot as proof. Distinguish introduced failures, reproduced baseline failures, and environmental blockers.
 
 ## Findings and result
 
