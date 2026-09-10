@@ -48,6 +48,6 @@ Use least-privilege workflow permissions. Pin third-party actions to immutable c
 
 ## Change and PR workflow
 
-Before any commit, push, PR update, review reply, or other remote change, run focused protocol/security tests, the full package build, fresh-artifact inspection, and `git diff --check`; then inspect the complete base-to-HEAD diff.
+Before any commit, push, PR update, review reply, or other remote change, run focused protocol/security tests, the full package build, fresh-artifact inspection, and `git diff --check`; then inspect the complete base-to-HEAD diff. Before committing local work, also inspect the staged changes and every relevant intended unstaged or untracked change as one effective final patch.
 
 For substantive changes, obtain a fresh source-read-only review. Add a bounded security specialist for parser, authentication, crypto, proxy-header, throttling, forwarding, or workflow-permission changes. The implementation agent fixes accepted findings, reruns validation, and obtains a new review. Do not merge without explicit authorization.
