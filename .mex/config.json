@@ -1,0 +1,10 @@
+{
+  "setupMode": "code-repo",
+  "aiTools": [
+    "codex"
+  ],
+  "scaffold_id": "4653ca9c-2291-458c-8476-ae08bec4291f",
+  "scaffold_name": "VotifierPlus",
+  "origin": null,
+  "upstream": null
+}

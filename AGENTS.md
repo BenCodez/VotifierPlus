@@ -51,3 +51,19 @@ Use least-privilege workflow permissions. Pin third-party actions to immutable c
 Before any commit, push, PR update, review reply, or other remote change, run focused protocol/security tests, the full package build, fresh-artifact inspection, and the applicable `git diff --check`. For PR and branch work, inspect the complete base-to-HEAD diff. For standalone commit reviews, inspect the requested commit against its first parent (or the explicitly requested range) instead of substituting a base-to-HEAD branch diff. Before committing local work, also inspect the staged changes and every relevant intended unstaged or untracked change as one effective final patch.
 
 For substantive changes, obtain a fresh source-read-only review. Add a bounded security specialist for parser, authentication, crypto, proxy-header, throttling, forwarding, or workflow-permission changes. The implementation agent fixes accepted findings, reruns validation, and obtains a new review. Do not merge without explicit authorization.
+
+## MEX project memory
+
+For substantive protocol, security-compatibility, or architecture tasks, read relevant MEX context and then verify against current Java/tests and formal docs. Use code/tests first, this guide and formal docs second, reviewed MEX third, and historical Relays last; correct stale claims. Skip MEX for trivial edits. MEX 0.8.2 does not index Java here. Treat legacy packet acceptance as compatibility, not a security recommendation. Use `$mex-inbox` for durable findings and `$mex-relay` for substantial unfinished handoffs.
+
+<!-- mex-agent:skills:start -->
+## MEX agent skills
+- At the start of every session, read `.mex/AGENTS.md` and `.mex/ROUTER.md` before project work; follow `ROUTER.md` to load only the relevant context.
+- Read `mex logging --json` at session start and before optional logging. Its checkout-local advisory mode is `significant` (quiet default: material decisions, risks, blockers, or durable discoveries), `checkpoints` (batch useful notes at task/session boundaries), or `manual` (no unsolicited notes). Skip routine tool calls, edits, repeated status, and empty summaries. Honor explicit user log requests in every mode; never suppress mandatory workflow Activity or recovery audit records. Report a policy read failure instead of guessing or changing the preference.
+- When earlier work may inform the task, retrieve bounded relevant notes with `mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json`, using the known subject or exact recorded file path, or both. Treat matches as historical evidence, not accepted current knowledge; verify conclusions before reuse or explicit promotion with their source retained.
+- Use `$mex-inbox` for explicit contributions to project knowledge and `$mex-relay` for durable team handoffs. Invoke them automatically when intent clearly matches; ordinary GROW upkeep remains available without Inbox.
+- When MEX context materially helps your work, mention MEX and the relevant finding naturally in your explanation. Tie the mention to what it helped you understand, decide, or verify. Avoid fixed phrases, standalone acknowledgements, repeated mentions, or narrating routine context loading. This replaces older MEX instructions requiring a fixed acknowledgement or context-loading narration.
+- Do not claim an author, date, or historical event unless the retrieved data actually provides it.
+- After a MEX write, say exactly what changed and its sharing boundary: a local draft is checkout-only and nothing is shared; a canonical artifact is written to the working tree and requires commit/push to share.
+- Skill activation is not approval for canonical actions.
+<!-- mex-agent:skills:end -->
