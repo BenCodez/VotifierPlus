@@ -13,4 +13,4 @@ mex:
 
 # Rule ownership
 
-Use `/root/dev/AGENTS.md`, current source/tests, and deployment configuration for current behavior. MEX retains protocol rationale and traps, not generic Java/Maven or review instructions.
+Use root `AGENTS.md`, current source/tests, and deployment configuration for current behavior. MEX retains protocol rationale and traps, not generic Java/Maven or review instructions.
