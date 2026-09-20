@@ -5,7 +5,7 @@ triggers: [network, PROXY, throttle, thread, tunnel]
 last_updated: 2026-09-20
 mex:
   id: mx_01M307CW4VKS6V9B37VZQDZN8F
-  type: constraint
+  type: component
   status: promoted
   revision: 1
   title: Connection and proxy header boundary

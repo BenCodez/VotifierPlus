@@ -5,7 +5,7 @@ triggers: [protocol, token, RSA, V1, V2]
 last_updated: 2026-09-20
 mex:
   id: mx_01M307CW4VM5CZ0SZXZBWYWHK7
-  type: constraint
+  type: component
   status: promoted
   revision: 1
   title: Vote protocol versions
