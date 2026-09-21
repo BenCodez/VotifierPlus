@@ -3,13 +3,17 @@ package com.bencodez.votifierplus.tests;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.net.Socket;
 import java.security.Key;
 import java.security.KeyPair;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -36,7 +40,7 @@ public class VoteReceiverLifecycleTest {
 	public void intentionalShutdownDoesNotWarn() throws Exception {
 		receiver = new CapturingVoteReceiver();
 		receiver.start();
-		waitForThreadToStart();
+		waitForAccept();
 
 		receiver.shutdown();
 		receiver.join(3000);
@@ -49,34 +53,26 @@ public class VoteReceiverLifecycleTest {
 	public void unexpectedAcceptSocketExceptionWarnsWhileRunning() throws Exception {
 		receiver = new CapturingVoteReceiver();
 		receiver.start();
-		waitForThreadToStart();
+		waitForAccept();
 
 		receiver.getServer().close();
-		waitForWarning();
+		receiver.join(3000);
 
+		assertFalse(receiver.isAlive(), "Receiver should stop after its listener is closed");
 		assertTrue(receiver.getWarnings().stream()
 				.anyMatch(message -> message.contains("Connection error while accepting vote socket")),
 				() -> "Expected accept warning, got: " + receiver.getWarnings());
+		assertTrue(receiver.getWarnings().size() == 1, () -> "Expected one accept warning, got: " + receiver.getWarnings());
 	}
 
-	private void waitForThreadToStart() throws InterruptedException {
-		long deadline = System.nanoTime() + 2000_000_000L;
-		while (!receiver.isAlive() && System.nanoTime() < deadline) {
-			Thread.sleep(10);
-		}
-		assertTrue(receiver.isAlive(), "Receiver thread did not start");
-	}
-
-	private void waitForWarning() throws InterruptedException {
-		long deadline = System.nanoTime() + 2000_000_000L;
-		while (receiver.getWarnings().isEmpty() && System.nanoTime() < deadline) {
-			Thread.sleep(10);
-		}
+	private void waitForAccept() throws InterruptedException {
+		assertTrue(receiver.awaitingAccept(2, TimeUnit.SECONDS), "Receiver did not reach accept()");
 	}
 
 	private static final class CapturingVoteReceiver extends VoteReceiver {
 
 		private final List<String> warnings = new CopyOnWriteArrayList<>();
+		private final CountDownLatch accepting = new CountDownLatch(1);
 
 		private CapturingVoteReceiver() throws Exception {
 			super("127.0.0.1", 0);
@@ -84,6 +80,16 @@ public class VoteReceiverLifecycleTest {
 
 		private List<String> getWarnings() {
 			return warnings;
+		}
+
+		private boolean awaitingAccept(long timeout, TimeUnit unit) throws InterruptedException {
+			return accepting.await(timeout, unit);
+		}
+
+		@Override
+		protected Socket acceptSocket() throws IOException {
+			accepting.countDown();
+			return super.acceptSocket();
 		}
 
 		@Override
