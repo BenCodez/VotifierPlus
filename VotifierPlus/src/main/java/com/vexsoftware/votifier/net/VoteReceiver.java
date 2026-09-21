@@ -134,7 +134,7 @@ public abstract class VoteReceiver extends Thread {
 			try {
 				server.close();
 			} catch (Exception ex) {
-				logWarning("Unable to shut down vote receiver cleanly.");
+				debug(ex);
 			}
 		}
 
@@ -278,8 +278,6 @@ public abstract class VoteReceiver extends Thread {
 			} catch (SocketException ex) {
 				if (running) {
 					logWarning("Connection error while accepting vote socket: " + ex.getLocalizedMessage());
-				} else {
-					logWarning("Votifier socket closed.");
 				}
 			} catch (Exception ex) {
 				logWarning("Error accepting vote connection: "
