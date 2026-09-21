@@ -134,7 +134,6 @@ public abstract class VoteReceiver extends Thread {
 			try {
 				server.close();
 			} catch (Exception ex) {
-				logWarning("Unable to shut down vote receiver cleanly.");
 				debug(ex);
 			}
 		}
