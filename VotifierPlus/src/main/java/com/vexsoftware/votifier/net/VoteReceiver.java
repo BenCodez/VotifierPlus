@@ -134,7 +134,7 @@ public abstract class VoteReceiver extends Thread {
 			try {
 				server.close();
 			} catch (Exception ex) {
-				logWarning("Unable to shut down vote receiver cleanly.");
+				debug(ex);
 			}
 		}
 
@@ -222,7 +222,7 @@ public abstract class VoteReceiver extends Thread {
 
 		while (running) {
 			try {
-				final Socket socket = server.accept();
+				final Socket socket = acceptSocket();
 				final long acceptedAtNanos = System.nanoTime();
 
 				try {
@@ -278,8 +278,9 @@ public abstract class VoteReceiver extends Thread {
 			} catch (SocketException ex) {
 				if (running) {
 					logWarning("Connection error while accepting vote socket: " + ex.getLocalizedMessage());
-				} else {
-					logWarning("Votifier socket closed.");
+				}
+				if (server.isClosed()) {
+					running = false;
 				}
 			} catch (Exception ex) {
 				logWarning("Error accepting vote connection: "
@@ -287,6 +288,16 @@ public abstract class VoteReceiver extends Thread {
 								: ex.getLocalizedMessage()));
 			}
 		}
+	}
+
+	/**
+	 * Accepts the next incoming connection.
+	 *
+	 * @return the accepted connection
+	 * @throws IOException when the listener cannot accept a connection
+	 */
+	protected Socket acceptSocket() throws IOException {
+		return server.accept();
 	}
 
 	private void closeConnection(Socket socket) {
