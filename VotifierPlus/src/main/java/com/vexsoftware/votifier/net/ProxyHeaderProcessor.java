@@ -9,10 +9,13 @@ package com.vexsoftware.votifier.net;
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.PushbackInputStream;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import lombok.Getter;
@@ -26,6 +29,8 @@ public class ProxyHeaderProcessor {
 	private static final int MAX_CONNECT_HEADER_BYTES = 32768;
 	private static final int HEADER_READ_TIMEOUT_MILLIS = 5000;
 	private static final int DISCARD_BUFFER_BYTES = 1024;
+	private static final int PROXY_V2_IPV4_BYTES = 12;
+	private static final int PROXY_V2_IPV6_BYTES = 36;
 
 	private static final byte[] PROXY_V1_PREFIX = "PROXY".getBytes(StandardCharsets.US_ASCII);
 	private static final byte[] CONNECT_PREFIX = "CONNECT".getBytes(StandardCharsets.US_ASCII);
@@ -73,18 +78,12 @@ public class ProxyHeaderProcessor {
 		if (prefix[0] == PROXY_V1_PREFIX[0]) {
 			bytesRead = readPrefix(in, prefix, PROXY_V1_PREFIX.length, bytesRead, socket, deadlineNanos);
 			if (bytesRead == PROXY_V1_PREFIX.length && startsWith(prefix, bytesRead, PROXY_V1_PREFIX)) {
+				requireTrustedPeer(receiver, socket);
 				in.unread(prefix, 0, bytesRead);
 				String proxyHeader = readLine(in, socket, deadlineNanos, MAX_PROXY_V1_HEADER_BYTES, null,
-						"PROXY protocol v1 header exceeds " + MAX_PROXY_V1_HEADER_BYTES + " bytes");
+						"PROXY protocol v1 header exceeds " + MAX_PROXY_V1_HEADER_BYTES + " bytes", true);
 				receiver.debug("Discarded PROXY (v1) header: " + proxyHeader);
-
-				String[] parts = proxyHeader.split("\\s+");
-				if (parts.length >= 3) {
-					String srcIp = parts[2].trim();
-					if (!srcIp.isEmpty()) {
-						result.setRealIp(srcIp);
-					}
-				}
+				parseV1(proxyHeader, result);
 				return result;
 			}
 		}
@@ -123,8 +122,9 @@ public class ProxyHeaderProcessor {
 				throw new InvalidVoteException("Incomplete PROXY protocol v2 header");
 			}
 			if (bytesRead == 16 && startsWith(prefix, bytesRead, PROXY_V2_SIGNATURE)) {
+				requireTrustedPeer(receiver, socket);
 				int addressLength = ((prefix[14] & 0xFF) << 8) | (prefix[15] & 0xFF);
-				discardFully(in, addressLength, socket, deadlineNanos);
+				parseV2(in, prefix, addressLength, socket, deadlineNanos, result);
 				receiver.debug("Discarded PROXY protocol v2 header (" + (16 + addressLength) + " bytes)");
 				return result;
 			}
@@ -132,6 +132,112 @@ public class ProxyHeaderProcessor {
 
 		in.unread(prefix, 0, bytesRead);
 		return result;
+	}
+
+	private void requireTrustedPeer(VoteReceiver receiver, Socket socket) throws InvalidVoteException {
+		InetAddress peer = socket == null ? null : socket.getInetAddress();
+		Set<String> configured = receiver.getTrustedProxyIps();
+		if (peer != null && configured != null) {
+			for (String literal : configured) {
+				if (literal == null) {
+					continue;
+				}
+				try {
+					if (Arrays.equals(peer.getAddress(), IpLiteral.parse(literal.trim(), peer.getAddress().length == 4 ? 4 : 6))) {
+						return;
+					}
+				} catch (InvalidVoteException ignored) {
+					// Invalid configuration entries cannot grant trust.
+				}
+			}
+		}
+		throw new InvalidVoteException("PROXY protocol header from untrusted socket peer");
+	}
+
+	private void parseV1(String header, ProxyHeaderResult result) throws InvalidVoteException {
+		String[] parts = header.split(" ", -1);
+		if (parts.length >= 2 && "PROXY".equals(parts[0]) && "UNKNOWN".equals(parts[1])) {
+			return;
+		}
+		if (parts.length != 6 || !"PROXY".equals(parts[0])) {
+			throw new InvalidVoteException("Invalid PROXY protocol v1 header");
+		}
+		int family;
+		if ("TCP4".equals(parts[1])) {
+			family = 4;
+		} else if ("TCP6".equals(parts[1])) {
+			family = 6;
+		} else {
+			throw new InvalidVoteException("Unsupported PROXY protocol v1 family");
+		}
+		byte[] source = IpLiteral.parse(parts[2], family);
+		IpLiteral.parse(parts[3], family);
+		parsePort(parts[4]);
+		parsePort(parts[5]);
+		result.setRealIp(IpLiteral.format(source));
+	}
+
+	private void parsePort(String value) throws InvalidVoteException {
+		if (value.isEmpty() || value.length() > 5) {
+			throw new InvalidVoteException("Invalid PROXY port");
+		}
+		int port = 0;
+		for (int i = 0; i < value.length(); i++) {
+			char c = value.charAt(i);
+			if (c < '0' || c > '9') {
+				throw new InvalidVoteException("Invalid PROXY port");
+			}
+			port = port * 10 + c - '0';
+		}
+		if (port > 65535) {
+			throw new InvalidVoteException("Invalid PROXY port");
+		}
+	}
+
+	private void parseV2(PushbackInputStream in, byte[] header, int length, Socket socket, long deadlineNanos,
+			ProxyHeaderResult result) throws Exception {
+		int versionCommand = header[12] & 0xFF;
+		int familyTransport = header[13] & 0xFF;
+		if ((versionCommand & 0xF0) != 0x20) {
+			throw new InvalidVoteException("Invalid PROXY protocol v2 version");
+		}
+		int command = versionCommand & 0x0F;
+		if (command == 0) {
+			discardFully(in, length, socket, deadlineNanos);
+			return;
+		}
+		if (command != 1) {
+			throw new InvalidVoteException("Unsupported PROXY protocol v2 command");
+		}
+		if (familyTransport == 0) {
+			discardFully(in, length, socket, deadlineNanos);
+			return;
+		}
+		int addressBytes;
+		int ipBytes;
+		if (familyTransport == 0x11) {
+			addressBytes = PROXY_V2_IPV4_BYTES;
+			ipBytes = 4;
+		} else if (familyTransport == 0x21) {
+			addressBytes = PROXY_V2_IPV6_BYTES;
+			ipBytes = 16;
+		} else {
+			throw new InvalidVoteException("Unsupported PROXY protocol v2 family or transport");
+		}
+		if (length < addressBytes) {
+			throw new InvalidVoteException("Incomplete PROXY protocol v2 address block");
+		}
+		byte[] addresses = new byte[addressBytes];
+		int read = 0;
+		while (read < addressBytes) {
+			int count = readWithDeadline(in, addresses, read, addressBytes - read, socket, deadlineNanos);
+			if (count == -1) {
+				throw new InvalidVoteException("Incomplete PROXY protocol v2 header");
+			}
+			read += count;
+		}
+		discardFully(in, length - addressBytes, socket, deadlineNanos);
+		result.setRealIp(IpLiteral.format(Arrays.copyOf(addresses, ipBytes)));
 	}
 
 	private int readPrefix(PushbackInputStream in, byte[] prefix, int targetLength, Socket socket, long deadlineNanos)
@@ -166,6 +272,11 @@ public class ProxyHeaderProcessor {
 
 	private String readLine(PushbackInputStream in, Socket socket, long deadlineNanos, int maxLineBytes,
 			int[] totalBytes, String overflowMessage) throws Exception {
+		return readLine(in, socket, deadlineNanos, maxLineBytes, totalBytes, overflowMessage, false);
+	}
+
+	private String readLine(PushbackInputStream in, Socket socket, long deadlineNanos, int maxLineBytes,
+			int[] totalBytes, String overflowMessage, boolean requireCrLf) throws Exception {
 		ByteArrayOutputStream lineBuffer = new ByteArrayOutputStream(Math.min(128, maxLineBytes));
 		int lineBytes = 0;
 
@@ -182,6 +293,9 @@ public class ProxyHeaderProcessor {
 			incrementTotalBytes(totalBytes);
 
 			if (value == '\n') {
+				if (requireCrLf) {
+					throw new InvalidVoteException("PROXY protocol v1 header requires CRLF");
+				}
 				break;
 			}
 
@@ -206,7 +320,7 @@ public class ProxyHeaderProcessor {
 			lineBuffer.write(value);
 		}
 
-		return lineBuffer.toString(StandardCharsets.US_ASCII.name()).trim();
+		return lineBuffer.toString(StandardCharsets.US_ASCII.name());
 	}
 
 	private void incrementTotalBytes(int[] totalBytes) throws InvalidVoteException {

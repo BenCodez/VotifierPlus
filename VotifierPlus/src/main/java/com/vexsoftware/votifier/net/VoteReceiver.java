@@ -71,6 +71,7 @@ import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -320,6 +321,11 @@ public abstract class VoteReceiver extends Thread {
 	}
 
 	public abstract ThrottleConfig getThrottleConfig();
+
+	/** Socket peers allowed to supply PROXY protocol metadata. Empty by default. */
+	public Set<String> getTrustedProxyIps() {
+		return Collections.emptySet();
+	}
 
 	public abstract void logWarning(String warn);
 
