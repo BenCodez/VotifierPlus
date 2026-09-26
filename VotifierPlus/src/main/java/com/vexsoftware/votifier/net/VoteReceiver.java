@@ -256,18 +256,13 @@ public abstract class VoteReceiver extends Thread {
 											try {
 												voteForwarder.forwardVote(forwardVote);
 											} catch (Exception ex) {
-												logWarning("Error forwarding vote: "
-														+ (ex.getLocalizedMessage() == null
-																? ex.getClass().getSimpleName()
-																: ex.getLocalizedMessage()));
+												logWarning("Error forwarding vote: " + VoteLogSafety.exceptionType(ex));
 											}
 										}
 									});
 								}
 							} catch (Exception ex) {
-								logWarning("Error processing vote connection: "
-										+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
-												: ex.getLocalizedMessage()));
+								logWarning("Error processing vote connection: " + VoteLogSafety.exceptionType(ex));
 							}
 						}
 					});
@@ -277,15 +272,13 @@ public abstract class VoteReceiver extends Thread {
 				}
 			} catch (SocketException ex) {
 				if (running) {
-					logWarning("Connection error while accepting vote socket: " + ex.getLocalizedMessage());
+					logWarning("Connection error while accepting vote socket: " + VoteLogSafety.exceptionType(ex));
 				}
 				if (server.isClosed()) {
 					running = false;
 				}
 			} catch (Exception ex) {
-				logWarning("Error accepting vote connection: "
-						+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName()
-								: ex.getLocalizedMessage()));
+				logWarning("Error accepting vote connection: " + VoteLogSafety.exceptionType(ex));
 			}
 		}
 	}

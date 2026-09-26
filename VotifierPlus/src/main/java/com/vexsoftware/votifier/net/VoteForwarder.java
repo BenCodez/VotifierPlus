@@ -26,6 +26,7 @@ public class VoteForwarder {
 	private static final String FIELD_ADDRESS = "address";
 	private static final String FIELD_TIMESTAMP = "timestamp";
 	private static final String FIELD_CHALLENGE = "challenge";
+	private static final int MAX_HANDSHAKE_CHARS = 512;
 
 	private final VoteReceiver receiver;
 
@@ -38,11 +39,11 @@ public class VoteForwarder {
 			ForwardServer server = receiver.getServerData(name);
 
 			if (!server.isEnabled()) {
-				receiver.debug("Skipping disabled forward server: " + name);
+				receiver.debug("Skipping disabled forward server: " + VoteLogSafety.field(name));
 				continue;
 			}
 
-			receiver.debug("Preparing to forward vote to: " + name + ", tokens mode: " + server.isUseTokens());
+			receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + server.isUseTokens());
 
 			try (Socket socket = new Socket()) {
 				socket.connect(new InetSocketAddress(server.getHost(), server.getPort()), 1000);
@@ -52,14 +53,15 @@ public class VoteForwarder {
 						new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
 				OutputStream out = socket.getOutputStream();
 
-				String greeting = in.readLine();
-				receiver.debug("Received handshake from " + name + ": '" + greeting + "'");
+				String greeting = readHandshakeLine(in);
+				receiver.debug("Received handshake from " + VoteLogSafety.field(name)
+						+ " (" + (greeting == null ? 0 : greeting.length()) + " chars)");
 
 				byte[] payload;
 				if (server.isUseTokens()) {
 					String[] parts = greeting.split(" ");
 					if (parts.length < 3 || !HANDSHAKE_PREFIX.equals(parts[0]) || !HANDSHAKE_V2.equals(parts[1])) {
-						throw new IllegalStateException("Invalid token-mode handshake from " + name + ": " + greeting);
+						throw new IllegalStateException("Invalid token-mode handshake");
 					}
 
 					String challenge = parts[2];
@@ -91,11 +93,34 @@ public class VoteForwarder {
 
 				out.write(payload);
 				out.flush();
-				receiver.debug("Payload forwarded to " + name + " (" + payload.length + " bytes)");
+				receiver.debug("Payload forwarded to " + VoteLogSafety.field(name) + " (" + payload.length + " bytes)");
 			} catch (Exception ex) {
-				receiver.log("Failed to forward vote to " + name + ": " + ex.getClass().getSimpleName() + " - "
-						+ ex.getMessage());
+				receiver.log("Failed to forward vote to " + VoteLogSafety.field(name) + ": "
+						+ VoteLogSafety.exceptionType(ex));
 			}
 		}
+	}
+
+	static String readHandshakeLine(BufferedReader in) throws Exception {
+		StringBuilder line = new StringBuilder();
+		int value;
+		while ((value = in.read()) != -1) {
+			if (value == '\r') {
+				in.mark(1);
+				int next = in.read();
+				if (next != '\n' && next != -1) {
+					in.reset();
+				}
+				return line.toString();
+			}
+			if (value == '\n') {
+				return line.toString();
+			}
+			if (line.length() >= MAX_HANDSHAKE_CHARS) {
+				throw new IllegalStateException("Forward server handshake exceeds limit");
+			}
+			line.append((char) value);
+		}
+		return line.length() == 0 ? null : line.toString();
 	}
 }

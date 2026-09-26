@@ -76,7 +76,7 @@ public class ProxyHeaderProcessor {
 				in.unread(prefix, 0, bytesRead);
 				String proxyHeader = readLine(in, socket, deadlineNanos, MAX_PROXY_V1_HEADER_BYTES, null,
 						"PROXY protocol v1 header exceeds " + MAX_PROXY_V1_HEADER_BYTES + " bytes");
-				receiver.debug("Discarded PROXY (v1) header: " + proxyHeader);
+				receiver.debug("Discarded PROXY (v1) header (" + proxyHeader.length() + " chars)");
 
 				String[] parts = proxyHeader.split("\\s+");
 				if (parts.length >= 3) {
@@ -96,7 +96,7 @@ public class ProxyHeaderProcessor {
 				int[] totalHeaderBytes = new int[1];
 				String connectLine = readLine(in, socket, deadlineNanos, MAX_CONNECT_LINE_BYTES, totalHeaderBytes,
 						"HTTP CONNECT header line exceeds " + MAX_CONNECT_LINE_BYTES + " bytes");
-				receiver.debug("Received CONNECT request: " + connectLine);
+				receiver.debug("Received CONNECT request line (" + connectLine.length() + " chars)");
 
 				int headerCount = 0;
 				while (true) {
@@ -108,8 +108,9 @@ public class ProxyHeaderProcessor {
 					if (++headerCount > MAX_CONNECT_HEADERS) {
 						throw new InvalidVoteException("Too many HTTP CONNECT headers");
 					}
-					receiver.debug("Discarding header: " + line);
+					// Header values may contain credentials or untrusted control characters.
 				}
+				receiver.debug("Discarded " + headerCount + " CONNECT headers");
 
 				writer.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 				writer.flush();

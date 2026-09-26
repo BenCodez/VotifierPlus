@@ -109,7 +109,9 @@ public class VoteConnectionHandler {
 				receiver.log("Test vote received");
 			}
 
-			receiver.log("Received vote record -> " + vote);
+			receiver.log("Received vote record: service=" + VoteLogSafety.field(vote.getServiceName())
+					+ ", user=" + VoteLogSafety.field(vote.getUsername())
+					+ ", source=" + VoteLogSafety.field(vote.getSourceAddress()));
 			throttleService.success(throttleKey, aggregateThrottleKey);
 
 			if (!"TestVote".equalsIgnoreCase(vote.getTimeStamp())) {
@@ -124,7 +126,7 @@ public class VoteConnectionHandler {
 
 			throttleService.fail(throttleKey, aggregateThrottleKey, tunnelMode, realIpKnown);
 			throttleService.logWarning(receiver, "invalid|" + throttleKey,
-					"Invalid vote format from " + remoteIp + ": " + ex.getMessage());
+					"Invalid vote format from " + remoteIp + ": " + VoteLogSafety.message(ex.getMessage()));
 		} catch (VoteAuthenticationException ex) {
 			if (throttleKey == null) {
 				throttleKey = "tunnel:" + remoteIp;
@@ -132,7 +134,7 @@ public class VoteConnectionHandler {
 
 			throttleService.fail(throttleKey, aggregateThrottleKey, tunnelMode, realIpKnown);
 			throttleService.logWarning(receiver, "auth|" + throttleKey,
-					"Authentication failed from " + remoteIp + ": " + ex.getMessage());
+					"Authentication failed from " + remoteIp + ": " + VoteLogSafety.message(ex.getMessage()));
 		} catch (MalformedJsonException ex) {
 			if (throttleKey == null) {
 				throttleKey = "tunnel:" + remoteIp;
@@ -140,7 +142,7 @@ public class VoteConnectionHandler {
 
 			throttleService.fail(throttleKey, aggregateThrottleKey, tunnelMode, false);
 			throttleService.logWarning(receiver, "malformedjson|" + throttleKey,
-					"Invalid vote format: Malformed JSON payload from " + remoteIp + " - " + ex.getMessage());
+					"Invalid vote format: Malformed JSON payload from " + remoteIp);
 		} catch (BadPaddingException ex) {
 			if (throttleKey == null) {
 				throttleKey = "tunnel:" + remoteIp;
@@ -151,13 +153,13 @@ public class VoteConnectionHandler {
 					"Decryption failed: Invalid V1 vote block / public key mismatch from " + remoteIp);
 		} catch (SocketTimeoutException ex) {
 			throttleService.logWarning(receiver, "timeout|" + remoteIp,
-					"Connection timeout while waiting for vote payload from " + remoteIp + " - " + ex.getMessage());
+					"Connection timeout while waiting for vote payload from " + remoteIp);
 		} catch (SocketException ex) {
 			throttleService.logWarning(receiver, "socket|" + remoteIp,
-					"Connection error: Protocol error from " + remoteIp + " - " + ex.getLocalizedMessage());
+					"Connection error: Protocol error from " + remoteIp);
 		} catch (Exception ex) {
 			throttleService.logWarning(receiver, "generic|" + remoteIp, "Error processing vote from " + remoteIp + ": "
-					+ (ex.getLocalizedMessage() == null ? ex.getClass().getSimpleName() : ex.getLocalizedMessage()));
+					+ VoteLogSafety.exceptionType(ex));
 		}
 
 		return null;
@@ -178,7 +180,7 @@ public class VoteConnectionHandler {
 		writer.write(message);
 		writer.newLine();
 		writer.flush();
-		receiver.debug("Sent handshake: " + message);
+		receiver.debug("Sent VOTIFIER " + (useV2Handshake ? "2" : "1") + " handshake");
 	}
 
 	private boolean waitForPayload(PushbackInputStream in, Socket socket, String address) throws Exception {
@@ -206,10 +208,9 @@ public class VoteConnectionHandler {
 			String okMessage = okResponse.toString() + "\r\n";
 			writer.write(okMessage);
 			writer.flush();
-			receiver.debug("Sent OK response: " + okMessage);
+			receiver.debug("Sent vote OK response");
 		} catch (Exception ex) {
-			receiver.debug(
-					"Failed to send OK response, but will continue to process vote: " + ex.getLocalizedMessage());
+			receiver.debug("Failed to send OK response: " + VoteLogSafety.exceptionType(ex));
 		}
 	}
 }

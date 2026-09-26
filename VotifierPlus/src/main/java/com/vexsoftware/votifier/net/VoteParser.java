@@ -324,8 +324,7 @@ public class VoteParser {
 		String opcode = readString(decrypted, position);
 		position += opcode.length() + 1;
 		if (!OPCODE_VOTE.equals(opcode)) {
-			throw new InvalidVoteException(
-					"Expected opcode '" + OPCODE_VOTE + "' but got '" + opcode + "' from " + address);
+			throw new InvalidVoteException("Unexpected V1 vote opcode from " + address);
 		}
 
 		VoteRequest request = new VoteRequest();
@@ -481,7 +480,7 @@ public class VoteParser {
 	private VoteRequest parseV2(byte[] data, VoteReceiver receiver, String address, String challenge)
 			throws Exception {
 		String voteData = new String(data, StandardCharsets.UTF_8).trim();
-		receiver.debug("Received raw V2 vote payload: [" + voteData + "]");
+		receiver.debug("Received V2 vote payload (" + data.length + " bytes)");
 
 		int firstBrace = voteData.indexOf('{');
 		if (firstBrace > 0) {
@@ -495,7 +494,7 @@ public class VoteParser {
 		}
 
 		String jsonPayloadRaw = voteData.substring(jsonStart, jsonEnd + 1).trim();
-		receiver.debug("Extracted raw JSON payload: [" + jsonPayloadRaw + "]");
+		receiver.debug("Extracted V2 JSON envelope (" + jsonPayloadRaw.length() + " chars)");
 
 		JsonObject voteMessage;
 		if (jsonPayloadRaw.startsWith("[")) {
@@ -519,7 +518,7 @@ public class VoteParser {
 		try {
 			providedSig = Base64.getDecoder().decode(signature);
 		} catch (IllegalArgumentException ex) {
-			throw new InvalidVoteException("Signature is not valid Base64 from " + address + ": " + ex.getMessage(),
+			throw new InvalidVoteException("Signature is not valid Base64 from " + address,
 					ex);
 		}
 
@@ -527,7 +526,7 @@ public class VoteParser {
 		try {
 			votePayload = GSON.fromJson(payload, JsonObject.class);
 		} catch (Exception ex) {
-			throw new InvalidVoteException("Inner payload is not valid JSON from " + address + ": " + ex.getMessage(),
+			throw new InvalidVoteException("Inner payload is not valid JSON from " + address,
 					ex);
 		}
 
@@ -548,17 +547,15 @@ public class VoteParser {
 		if (key == null) {
 			key = tokens.get("default");
 			if (key == null) {
-				throw new VoteAuthenticationException(
-						"Unknown token for service '" + serviceName + "' from " + address);
+				throw new VoteAuthenticationException("Unknown token for vote service from " + address);
 			}
-			receiver.debug("Using default token for service: " + serviceName);
+			receiver.debug("Using default token for service: " + VoteLogSafety.field(serviceName));
 		} else {
-			receiver.debug("Using service-specific token for: " + serviceName);
+			receiver.debug("Using service-specific token for: " + VoteLogSafety.field(serviceName));
 		}
 
 		if (!hmacEqual(providedSig, payload.getBytes(StandardCharsets.UTF_8), key)) {
-			throw new VoteAuthenticationException(
-					"Signature verification failed (invalid token?) for service '" + serviceName + "' from " + address);
+			throw new VoteAuthenticationException("Signature verification failed for vote service from " + address);
 		}
 
 		if (!receivedChallenge.equals(challenge.trim())) {
