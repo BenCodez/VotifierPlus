@@ -287,7 +287,7 @@ public class VoteThrottleService {
 	public void logWarning(VoteReceiver receiver, String key, String message) {
 		String allowed = allowLog(key, message);
 		if (allowed != null) {
-			receiver.logWarning(allowed);
+			receiver.logWarning(VoteLogSafety.message(allowed));
 		}
 	}
 
