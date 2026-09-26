@@ -6,10 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
@@ -23,6 +26,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
@@ -85,6 +89,7 @@ public class VoteConnectionHandlerTest {
 
 		private final String testChallenge = "testChallenge";
 		private volatile boolean useTokens = false;
+		private Set<String> trustedProxyIps = Collections.emptySet();
 
 		public TestVoteReceiver(String host, int port) throws Exception {
 			super(host, port);
@@ -151,6 +156,11 @@ public class VoteConnectionHandlerTest {
 		@Override
 		public String getChallenge() {
 			return testChallenge;
+		}
+
+		@Override
+		public Set<String> getTrustedProxyIps() {
+			return trustedProxyIps;
 		}
 
 		@Override
@@ -432,6 +442,7 @@ public class VoteConnectionHandlerTest {
 	@Test
 	public void testHandleProxyV1UsesRealIpAsSourceAddress() throws Exception {
 		receiver.setUseTokens(false);
+		receiver.trustedProxyIps = Collections.singleton("127.0.0.1");
 		VoteThrottleService throttleService = new VoteThrottleService(null);
 		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, throttleService);
 
@@ -476,6 +487,7 @@ public class VoteConnectionHandlerTest {
 	@Test
 	public void testNonTunnelProxyOverflowUsesRemoteAggregate() throws Exception {
 		receiver.setUseTokens(false);
+		receiver.trustedProxyIps = Collections.singleton("127.0.0.1");
 		ThrottleConfig config = new ThrottleConfig(true, Collections.<String>emptySet(), "5s", 1, "10s", 1,
 				"10s", false, 999, "1s", "60s");
 		VoteThrottleService throttleService = new VoteThrottleService(config);
@@ -549,5 +561,121 @@ public class VoteConnectionHandlerTest {
 
 			assertTrue(!clientReader.ready(), "Did not expect an OK response for TestVote");
 		}
+	}
+
+	@Test
+	public void testProxyHeadersRequireTrustedSocketPeer() throws Exception {
+		byte[] v1 = "PROXY TCP4 203.0.113.10 127.0.0.1 1234 8192\r\n"
+				.getBytes(StandardCharsets.US_ASCII);
+		byte[] v2 = proxyV2(4, "203.0.113.10", "127.0.0.1", 1234, 8192);
+		assertNull(sendV1Vote(v1));
+		assertNull(sendV1Vote(v2));
+		receiver.trustedProxyIps = Collections.singleton("127.0.0.1");
+		assertEquals("203.0.113.10", sendV1Vote(v1).getSourceAddress());
+		assertEquals("203.0.113.10", sendV1Vote(v2).getSourceAddress());
+	}
+
+	@Test
+	public void testTrustedProxyIpv6AndConnectAttribution() throws Exception {
+		receiver.trustedProxyIps = Collections.singleton("127.0.0.1");
+		assertEquals("2001:db8:0:0:0:0:0:10", sendV1Vote(
+				"PROXY TCP6 2001:db8::10 2001:db8::20 1234 8192\r\n".getBytes(StandardCharsets.US_ASCII))
+				.getSourceAddress());
+		assertEquals("2001:db8:0:0:0:0:0:10", sendV1Vote(
+				proxyV2(6, "2001:db8::10", "2001:db8::20", 1234, 8192)).getSourceAddress());
+		receiver.trustedProxyIps = Collections.emptySet();
+		assertEquals("127.0.0.1", sendV1Vote(
+				"CONNECT vote.example:443 HTTP/1.1\r\nHost: vote.example:443\r\n\r\n"
+						.getBytes(StandardCharsets.US_ASCII)).getSourceAddress());
+	}
+
+	@Test
+	public void testTrustedProxyHeadersWithoutSourceKeepSocketAttribution() throws Exception {
+		receiver.trustedProxyIps = Collections.singleton("127.0.0.1");
+		assertEquals("127.0.0.1", sendV1Vote("PROXY UNKNOWN\r\n".getBytes(StandardCharsets.US_ASCII))
+				.getSourceAddress());
+		byte[] local = proxyV2(4, "203.0.113.10", "127.0.0.1", 1234, 8192);
+		local[12] = 0x20;
+		assertEquals("127.0.0.1", sendV1Vote(local).getSourceAddress());
+		byte[] withTlv = proxyV2(4, "203.0.113.10", "127.0.0.1", 1234, 8192);
+		withTlv[15] += 4;
+		ByteArrayOutputStream packet = new ByteArrayOutputStream();
+		packet.write(withTlv);
+		packet.write(new byte[] { 0x01, 0, 0x01, 0x01 });
+		assertEquals("203.0.113.10", sendV1Vote(packet.toByteArray()).getSourceAddress());
+	}
+
+	@Test
+	public void testMalformedProxyAddressesFamiliesAndPortsAreRejected() throws Exception {
+		receiver.trustedProxyIps = Collections.singleton("127.0.0.1");
+		String[] invalid = {
+				"PROXY TCP4 example.com 127.0.0.1 1234 8192\r\n",
+				"PROXY TCP4 256.0.0.1 127.0.0.1 1234 8192\r\n",
+				"PROXY TCP4 ::1 127.0.0.1 1234 8192\r\n",
+				"PROXY TCP6 203.0.113.10 ::1 1234 8192\r\n",
+				"PROXY TCP4 203.0.113.10 ::1 1234 8192\r\n",
+				"PROXY TCP4 203.0.113.10 127.0.0.1 -1 8192\r\n",
+				"PROXY TCP4 203.0.113.10 127.0.0.1 65536 8192\r\n",
+				"PROXY TCP4 203.0.113.10 127.0.0.1 1234 99999\r\n",
+				"PROXY TCP4 203.0.113.10 127.0.0.1 1234 8192\n",
+				"PROXY UDP4 203.0.113.10 127.0.0.1 1234 8192\r\n" };
+		for (String header : invalid) {
+			assertNull(sendV1Vote(header.getBytes(StandardCharsets.US_ASCII)), header);
+		}
+		byte[] wrongVersion = proxyV2(4, "203.0.113.10", "127.0.0.1", 1234, 8192);
+		wrongVersion[12] = 0x11;
+		assertNull(sendV1Vote(wrongVersion));
+		byte[] wrongFamily = proxyV2(4, "203.0.113.10", "127.0.0.1", 1234, 8192);
+		wrongFamily[13] = 0x21;
+		assertNull(sendV1Vote(wrongFamily));
+		byte[] datagram = proxyV2(4, "203.0.113.10", "127.0.0.1", 1234, 8192);
+		datagram[13] = 0x12;
+		assertNull(sendV1Vote(datagram));
+	}
+
+	private Vote sendV1Vote(byte[] prefix) throws Exception {
+		VoteConnectionHandler handler = new VoteConnectionHandler(receiver, new VoteThrottleService(null));
+		try (ServerSocket server = new ServerSocket(0);
+				Socket client = new Socket("127.0.0.1", server.getLocalPort());
+				Socket accepted = server.accept()) {
+			Future<Vote> future = executor.submit(() -> handler.handle(accepted));
+			BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream(), StandardCharsets.US_ASCII));
+			assertEquals("VOTIFIER 1", reader.readLine());
+			String message = "VOTE\nsite\nuser\n127.0.0.1\nNormalTimestamp\n";
+			Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+			cipher.init(Cipher.ENCRYPT_MODE, testKeyPair.getPublic());
+			OutputStream out = client.getOutputStream();
+			ByteArrayOutputStream request = new ByteArrayOutputStream();
+			request.write(prefix);
+			request.write(cipher.doFinal(message.getBytes(StandardCharsets.US_ASCII)));
+			try {
+				out.write(request.toByteArray());
+				out.flush();
+				client.shutdownOutput();
+			} catch (SocketException ignored) {
+				// Rejected headers may close the connection while the client is writing.
+			}
+			return future.get(5, TimeUnit.SECONDS);
+		}
+	}
+
+	private byte[] proxyV2(int family, String source, String destination, int sourcePort, int destinationPort)
+			throws Exception {
+		byte[] sourceBytes = InetAddress.getByName(source).getAddress();
+		byte[] destinationBytes = InetAddress.getByName(destination).getAddress();
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		out.write(new byte[] { 0x0D, 0x0A, 0x0D, 0x0A, 0, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A });
+		out.write(0x21);
+		out.write(family == 4 ? 0x11 : 0x21);
+		int length = sourceBytes.length + destinationBytes.length + 4;
+		out.write(length >>> 8);
+		out.write(length);
+		out.write(sourceBytes);
+		out.write(destinationBytes);
+		out.write(sourcePort >>> 8);
+		out.write(sourcePort);
+		out.write(destinationPort >>> 8);
+		out.write(destinationPort);
+		return out.toByteArray();
 	}
 }

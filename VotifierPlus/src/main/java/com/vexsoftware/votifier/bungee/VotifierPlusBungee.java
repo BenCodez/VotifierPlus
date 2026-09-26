@@ -220,6 +220,12 @@ public class VotifierPlusBungee extends Plugin {
 				}
 
 				@Override
+				public java.util.Set<String> getTrustedProxyIps() {
+				List<String> ips = getConfig().getData().getStringList("TrustedProxyIps");
+				return ips == null ? Collections.<String>emptySet() : new HashSet<String>(ips);
+				}
+
+				@Override
 				public ThrottleConfig getThrottleConfig() {
 				  Configuration root = getConfig().getData().getSection("ConnectionThrottle");
 

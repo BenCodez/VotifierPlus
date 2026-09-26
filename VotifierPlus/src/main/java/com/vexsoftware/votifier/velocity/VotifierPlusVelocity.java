@@ -310,6 +310,19 @@ public class VotifierPlusVelocity {
 				}
 
 				@Override
+				public java.util.Set<String> getTrustedProxyIps() {
+				Set<String> ips = new HashSet<String>();
+				ConfigurationNode node = getConfig().getNode("TrustedProxyIps");
+				if (node != null && !node.virtual()) {
+				for (ConfigurationNode item : node.childrenList()) {
+				Object raw = item.raw();
+				if (raw instanceof String) ips.add((String) raw);
+				}
+				}
+				return ips;
+				}
+
+				@Override
 				public ThrottleConfig getThrottleConfig() {
 					ConfigurationNode root = getConfig().getNode("ConnectionThrottle");
 					if (root == null || root.virtual()) {

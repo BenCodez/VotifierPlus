@@ -12,6 +12,10 @@ TokenSupport: false
 # Rejects all legacy Votifier v1 RSA packets and forces a V2 handshake.
 # Keep this false if any configured voting site only supports V1.
 DisableV1: false
+# Only these direct socket peers may supply a PROXY protocol v1/v2 source IP.
+# Use numeric IPv4/IPv6 addresses. Keep empty unless a trusted proxy sends PROXY headers.
+# This is separate from ConnectionThrottle.TunnelRemoteIps.
+TrustedProxyIps: []
 
 # -----------------------------------------------------------------------------
 # Connection throttling & spam reduction for Votifier
@@ -24,7 +28,7 @@ DisableV1: false
 # Notes:
 # - All time values use ParsedDuration (examples: 30s, 2m, 10m, 1h)
 # - Per-client bans ONLY apply when a real client IP is known
-#   (e.g. via PROXY protocol v1). If behind playit without PROXY,
+#   (e.g. via trusted PROXY protocol v1/v2). If behind playit without PROXY,
 #   only tunnel-level throttling is used.
 # -----------------------------------------------------------------------------
 ConnectionThrottle:
@@ -88,7 +92,7 @@ ConnectionThrottle:
   # Per-client bans (ONLY when real client IP is known)
   #
   # Requires:
-  # - PROXY protocol v1 providing the real source IP
+  # - trusted PROXY protocol v1/v2 providing the real source IP
   #
   # If enabled and the same real IP repeatedly fails validation,
   # that IP will be temporarily banned.

@@ -339,6 +339,11 @@ public class VotifierPlus extends JavaPlugin {
 				}
 
 				@Override
+				public java.util.Set<String> getTrustedProxyIps() {
+					return new java.util.HashSet<String>(getConfigFile().getData().getStringList("TrustedProxyIps"));
+				}
+
+				@Override
 				public ThrottleConfig getThrottleConfig() {
 					ConfigurationSection root = getConfigFile().getData().getConfigurationSection("ConnectionThrottle");
 

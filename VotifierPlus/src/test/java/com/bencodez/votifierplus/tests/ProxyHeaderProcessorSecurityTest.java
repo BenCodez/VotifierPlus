@@ -9,6 +9,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
@@ -68,7 +69,7 @@ public class ProxyHeaderProcessorSecurityTest {
 		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
 		PushbackInputStream input = input(header + payload);
 
-		ProxyHeaderProcessor.ProxyHeaderResult result = processor.process(input, writer(), receiver);
+		ProxyHeaderProcessor.ProxyHeaderResult result = processor.process(input, writer(), receiver, new RecordingSocket());
 
 		assertEquals("192.0.2.10", result.getRealIp());
 		assertEquals(payload, readRemaining(input));
@@ -78,7 +79,7 @@ public class ProxyHeaderProcessorSecurityTest {
 	public void testProxyV1HeaderOver107BytesIsRejected() throws Exception {
 		String oversized = "PROXY " + "A".repeat(100) + "\r\n";
 		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
-				() -> processor.process(input(oversized), writer(), receiver));
+				() -> processor.process(input(oversized), writer(), receiver, new RecordingSocket()));
 
 		assertTrue(exception.getMessage().contains("exceeds 107 bytes"));
 	}
@@ -138,7 +139,7 @@ public class ProxyHeaderProcessorSecurityTest {
 	@Test
 	public void testProxyV2ReadsUseDecreasingCumulativeTimeout() throws Exception {
 		byte[] header = new byte[] { 0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
-				0x21, 0x11, 0x00, 0x03, 0x01, 0x02, 0x03 };
+				0x21, 0x11, 0x00, 0x0C, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 0, 2 };
 		ByteArrayInputStream fragmented = new ByteArrayInputStream(header) {
 			@Override
 			public synchronized int read(byte[] bytes, int offset, int length) {
@@ -178,6 +179,11 @@ public class ProxyHeaderProcessorSecurityTest {
 
 	private static class RecordingSocket extends Socket {
 
+		@Override
+		public InetAddress getInetAddress() {
+			return InetAddress.getLoopbackAddress();
+		}
+
 		private final List<Integer> recordedTimeouts = new ArrayList<>();
 		private int timeout = 5000;
 
@@ -201,6 +207,11 @@ public class ProxyHeaderProcessorSecurityTest {
 
 		StubVoteReceiver(String host, int port) throws Exception {
 			super(host, port);
+		}
+
+		@Override
+		public Set<String> getTrustedProxyIps() {
+			return Collections.singleton("127.0.0.1");
 		}
 
 		@Override

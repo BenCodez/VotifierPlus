@@ -154,6 +154,11 @@ public class VoteReceiverTest {
 		}
 
 		@Override
+		public Set<String> getTrustedProxyIps() {
+			return Collections.singleton("127.0.0.1");
+		}
+
+		@Override
 		public ThrottleConfig getThrottleConfig() {
 			return null;
 		}
@@ -478,7 +483,12 @@ public class VoteReceiverTest {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(baos, StandardCharsets.US_ASCII));
 
-		ProxyHeaderProcessor.ProxyHeaderResult result = proxyHeaderProcessor.process(pis, writer, receiver);
+		ProxyHeaderProcessor.ProxyHeaderResult result = proxyHeaderProcessor.process(pis, writer, receiver, new java.net.Socket() {
+			@Override
+			public java.net.InetAddress getInetAddress() {
+				return java.net.InetAddress.getLoopbackAddress();
+			}
+		});
 
 		assertEquals("192.168.1.1", result.getRealIp());
 
