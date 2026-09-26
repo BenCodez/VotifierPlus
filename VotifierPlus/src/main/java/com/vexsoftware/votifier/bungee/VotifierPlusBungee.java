@@ -1,9 +1,10 @@
 package com.vexsoftware.votifier.bungee;
 
 import java.io.File;
+import java.io.ByteArrayInputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
-import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.CodeSource;
 import java.security.Key;
 import java.security.KeyPair;
@@ -13,8 +14,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSAIO;
@@ -23,6 +22,7 @@ import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.ThrottleConfig;
 import com.vexsoftware.votifier.net.VoteReceiver;
+import com.vexsoftware.votifier.util.ZipResourceReader;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -88,32 +88,21 @@ public class VotifierPlusBungee extends Plugin {
 	}
 
 	private Configuration getVersionFile() {
+		CodeSource src;
 		try {
-			CodeSource src = this.getClass().getProtectionDomain().getCodeSource();
-			if (src != null) {
-				URL jar = src.getLocation();
-				ZipInputStream zip = null;
-				zip = new ZipInputStream(jar.openStream());
-				while (true) {
-					ZipEntry e = zip.getNextEntry();
-					if (e != null) {
-						String name = e.getName();
-						if (name.equals("votifierplusversion.yml")) {
-							Reader defConfigStream = new InputStreamReader(zip);
-							if (defConfigStream != null) {
-								Configuration conf = ConfigurationProvider
-										.getProvider(net.md_5.bungee.config.YamlConfiguration.class)
-										.load(defConfigStream);
-
-								defConfigStream.close();
-								return conf;
-							}
-						}
-					}
-				}
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
+			src = this.getClass().getProtectionDomain().getCodeSource();
+		} catch (Exception ignored) {
+			return null;
+		}
+		byte[] versionData = ZipResourceReader.read(src == null ? null : src.getLocation(), "votifierplusversion.yml");
+		if (versionData == null) {
+			return null;
+		}
+		try (Reader versionReader = new InputStreamReader(new ByteArrayInputStream(versionData), StandardCharsets.UTF_8)) {
+			return ConfigurationProvider.getProvider(net.md_5.bungee.config.YamlConfiguration.class)
+					.load(versionReader);
+		} catch (Exception ignored) {
+			// Optional build metadata must not interfere with plugin startup.
 		}
 		return null;
 	}
