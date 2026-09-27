@@ -39,7 +39,7 @@ public class VotifierPlusBungee extends Plugin {
 	@Getter
 	@Setter
 	private KeyPair keyPair;
-	private String buildNumber;
+	private String buildNumber = "NOTSET";
 	private Map<String, Key> tokens = new HashMap<String, Key>();
 
 	private void loadTokens() {

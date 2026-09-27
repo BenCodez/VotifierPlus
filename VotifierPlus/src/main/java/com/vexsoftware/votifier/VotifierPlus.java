@@ -96,7 +96,7 @@ public class VotifierPlus extends JavaPlugin {
 	private String buildNumber = "NOTSET";
 
 	@Getter
-	private String profile;
+	private String profile = "";
 
 	@Getter
 	private String time;
@@ -515,7 +515,9 @@ public class VotifierPlus extends JavaPlugin {
 			return null;
 		}
 		try (Reader versionReader = new InputStreamReader(new ByteArrayInputStream(versionData), StandardCharsets.UTF_8)) {
-			return YamlConfiguration.loadConfiguration(versionReader);
+			YamlConfiguration configuration = new YamlConfiguration();
+			configuration.load(versionReader);
+			return configuration;
 		} catch (Exception ignored) {
 			// Optional build metadata must not interfere with plugin startup.
 		}
