@@ -15,6 +15,7 @@ DisableV1: false
 # Only these direct socket peers may supply a PROXY protocol v1/v2 source IP.
 # Use numeric IPv4/IPv6 addresses. Keep empty unless a trusted proxy sends PROXY headers.
 # This is separate from ConnectionThrottle.TunnelRemoteIps.
+# Existing configs that predate this key keep legacy PROXY behavior until this setting is added.
 TrustedProxyIps: []
 
 # -----------------------------------------------------------------------------
