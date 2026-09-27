@@ -584,7 +584,7 @@ public class VoteConnectionHandlerTest {
 	@Test
 	public void testLegacyConfigWithoutTrustedProxyIpsStillAcceptsProxyHeaders() throws Exception {
 		receiver.trustedProxyIpsConfigured = false;
-		byte[] v1 = "PROXY TCP4 203.0.113.10 127.0.0.1 1234 8192\\r\\n"
+		byte[] v1 = "PROXY TCP4 203.0.113.10 127.0.0.1 1234 8192\r\n"
 				.getBytes(StandardCharsets.US_ASCII);
 		byte[] v2 = proxyV2(4, "203.0.113.10", "127.0.0.1", 1234, 8192);
 		assertEquals("203.0.113.10", sendV1Vote(v1).getSourceAddress());
