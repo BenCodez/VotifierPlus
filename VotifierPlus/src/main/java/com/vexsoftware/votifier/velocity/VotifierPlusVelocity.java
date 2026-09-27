@@ -2,12 +2,9 @@ package com.vexsoftware.votifier.velocity;
 
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.Reader;
-import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.CodeSource;
 import java.security.Key;
@@ -18,8 +15,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 import org.bstats.charts.SimplePie;
 import org.bstats.velocity.Metrics;
@@ -42,6 +37,7 @@ import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.ThrottleConfig;
 import com.vexsoftware.votifier.net.VoteReceiver;
+import com.vexsoftware.votifier.util.ZipResourceReader;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -106,52 +102,24 @@ public class VotifierPlusVelocity {
 	private void getVersionFile() {
 		try {
 			CodeSource src = this.getClass().getProtectionDomain().getCodeSource();
-			if (src != null) {
-				URL jar = src.getLocation();
-				ZipInputStream zip = null;
-				zip = new ZipInputStream(jar.openStream());
-				while (true) {
-					ZipEntry e = zip.getNextEntry();
-					if (e != null) {
-						String name = e.getName();
-						if (name.equals("votifierplusversion.yml")) {
-							Reader defConfigStream = new InputStreamReader(zip);
-							if (defConfigStream != null) {
-								versionFile = new File(dataDirectory.toFile(),
-										"tmp" + File.separator + "votifierplusversion.yml");
-								if (!versionFile.exists()) {
-									versionFile.getParentFile().mkdirs();
-									versionFile.createNewFile();
-								}
-								FileWriter fileWriter = new FileWriter(versionFile);
-
-								int charVal;
-								while ((charVal = defConfigStream.read()) != -1) {
-									fileWriter.append((char) charVal);
-								}
-
-								fileWriter.close();
-
-								// Configurate 4 YAML loader
-								YamlConfigurationLoader loader = YamlConfigurationLoader.builder()
-										.path(versionFile.toPath()).build();
-
-								defConfigStream.close();
-
-								ConfigurationNode node = loader.load();
-								if (node != null) {
-									// Configurate 4: node("x") replaces getNode("x")
-									version = node.node("version").getString("");
-									buildNumber = node.node("buildnumber").getString("NOTSET");
-								}
-								return;
-							}
-						}
-					}
-				}
+			byte[] versionData = ZipResourceReader.read(src == null ? null : src.getLocation(), "votifierplusversion.yml");
+			if (versionData == null) {
+				return;
 			}
-		} catch (Exception e) {
-			e.printStackTrace();
+
+			versionFile = new File(dataDirectory.toFile(), "tmp" + File.separator + "votifierplusversion.yml");
+			Files.createDirectories(versionFile.toPath().getParent());
+			Files.write(versionFile.toPath(), versionData);
+
+			// Configurate 4 YAML loader
+			YamlConfigurationLoader loader = YamlConfigurationLoader.builder().path(versionFile.toPath()).build();
+			ConfigurationNode node = loader.load();
+			if (node != null) {
+				version = node.node("version").getString("");
+				buildNumber = node.node("buildnumber").getString("NOTSET");
+			}
+		} catch (Exception ignored) {
+			// Optional build metadata must not interfere with plugin startup.
 		}
 	}
 
