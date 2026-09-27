@@ -101,7 +101,7 @@ public class ProxyHeaderProcessor {
 				while (true) {
 					String line = readLine(in, socket, deadlineNanos, MAX_CONNECT_LINE_BYTES, totalHeaderBytes,
 							"HTTP CONNECT header line exceeds " + MAX_CONNECT_LINE_BYTES + " bytes");
-					if (line.isEmpty()) {
+					if (line.trim().isEmpty()) {
 						break;
 					}
 					if (++headerCount > MAX_CONNECT_HEADERS) {

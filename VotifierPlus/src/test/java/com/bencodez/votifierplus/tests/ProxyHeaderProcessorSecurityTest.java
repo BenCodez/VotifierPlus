@@ -76,6 +76,19 @@ public class ProxyHeaderProcessorSecurityTest {
 	}
 
 	@Test
+	public void testTcp6AcceptsIpv4MappedLiteral() throws Exception {
+		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
+		PushbackInputStream input = input(
+				"PROXY TCP6 ::ffff:192.0.2.10 2001:db8::1 1234 8192\r\n" + payload);
+
+		ProxyHeaderProcessor.ProxyHeaderResult result = processor.process(input, writer(), receiver,
+				new RecordingSocket());
+
+		assertEquals("192.0.2.10", result.getRealIp());
+		assertEquals(payload, readRemaining(input));
+	}
+
+	@Test
 	public void testProxyV1HeaderOver107BytesIsRejected() throws Exception {
 		String oversized = "PROXY " + "A".repeat(100) + "\r\n";
 		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
@@ -89,6 +102,21 @@ public class ProxyHeaderProcessorSecurityTest {
 		String headers = "CONNECT vote.example:443 HTTP/1.1\r\nHost: vote.example:443\r\n\r\n";
 		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
 		PushbackInputStream input = input(headers + payload);
+		ByteArrayOutputStream response = new ByteArrayOutputStream();
+		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(response, StandardCharsets.US_ASCII));
+
+		processor.process(input, writer, receiver);
+		writer.flush();
+
+		assertTrue(response.toString(StandardCharsets.US_ASCII).contains("200 Connection Established"));
+		assertEquals(payload, readRemaining(input));
+	}
+
+	@Test
+	public void testWhitespaceOnlyConnectTerminatorPreservesVotePayload() throws Exception {
+		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
+		PushbackInputStream input = input("CONNECT vote.example:443 HTTP/1.1\r\nHost: vote.example:443\r\n \t\r\n"
+				+ payload);
 		ByteArrayOutputStream response = new ByteArrayOutputStream();
 		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(response, StandardCharsets.US_ASCII));
 
