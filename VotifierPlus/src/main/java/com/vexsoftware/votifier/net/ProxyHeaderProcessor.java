@@ -136,10 +136,6 @@ public class ProxyHeaderProcessor {
 	}
 
 	private void requireTrustedPeer(VoteReceiver receiver, Socket socket) throws InvalidVoteException {
-		if (!receiver.isTrustedProxyIpsConfigured()) {
-			// Backward compatibility for configs created before TrustedProxyIps existed.
-			return;
-		}
 		InetAddress peer = socket == null ? null : socket.getInetAddress();
 		Set<String> configured = receiver.getTrustedProxyIps();
 		if (peer != null && configured != null) {

@@ -90,7 +90,6 @@ public class VoteConnectionHandlerTest {
 		private final String testChallenge = "testChallenge";
 		private volatile boolean useTokens = false;
 		private Set<String> trustedProxyIps = Collections.emptySet();
-		private boolean trustedProxyIpsConfigured = true;
 
 		public TestVoteReceiver(String host, int port) throws Exception {
 			super(host, port);
@@ -162,11 +161,6 @@ public class VoteConnectionHandlerTest {
 		@Override
 		public Set<String> getTrustedProxyIps() {
 			return trustedProxyIps;
-		}
-
-		@Override
-		public boolean isTrustedProxyIpsConfigured() {
-			return trustedProxyIpsConfigured;
 		}
 
 		@Override
@@ -582,13 +576,12 @@ public class VoteConnectionHandlerTest {
 	}
 
 	@Test
-	public void testLegacyConfigWithoutTrustedProxyIpsStillAcceptsProxyHeaders() throws Exception {
-		receiver.trustedProxyIpsConfigured = false;
+	public void testMissingTrustedProxyIpsRejectsProxyHeaders() throws Exception {
 		byte[] v1 = "PROXY TCP4 203.0.113.10 127.0.0.1 1234 8192\r\n"
 				.getBytes(StandardCharsets.US_ASCII);
 		byte[] v2 = proxyV2(4, "203.0.113.10", "127.0.0.1", 1234, 8192);
-		assertEquals("203.0.113.10", sendV1Vote(v1).getSourceAddress());
-		assertEquals("203.0.113.10", sendV1Vote(v2).getSourceAddress());
+		assertNull(sendV1Vote(v1));
+		assertNull(sendV1Vote(v2));
 	}
 
 	@Test

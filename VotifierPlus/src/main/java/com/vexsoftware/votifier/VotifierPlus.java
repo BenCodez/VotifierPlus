@@ -344,11 +344,6 @@ public class VotifierPlus extends JavaPlugin {
 				}
 
 				@Override
-				public boolean isTrustedProxyIpsConfigured() {
-					return getConfigFile().getData().contains("TrustedProxyIps");
-				}
-
-				@Override
 				public ThrottleConfig getThrottleConfig() {
 					ConfigurationSection root = getConfigFile().getData().getConfigurationSection("ConnectionThrottle");
 

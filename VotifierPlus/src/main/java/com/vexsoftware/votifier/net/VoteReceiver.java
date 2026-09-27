@@ -320,15 +320,6 @@ public abstract class VoteReceiver extends Thread {
 		return Collections.emptySet();
 	}
 
-	/**
-	 * Whether the trusted-proxy allow-list is explicitly configured. Platform adapters override this
-	 * so existing installations that predate TrustedProxyIps retain legacy PROXY behavior on upgrade.
-	 * New configurations include the key and therefore use strict trusted-peer enforcement.
-	 */
-	public boolean isTrustedProxyIpsConfigured() {
-		return true;
-	}
-
 	public abstract void logWarning(String warn);
 
 	public abstract void logSevere(String msg);
