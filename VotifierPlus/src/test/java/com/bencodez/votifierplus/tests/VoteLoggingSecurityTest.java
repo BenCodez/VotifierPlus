@@ -14,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -131,11 +132,18 @@ public class VoteLoggingSecurityTest {
 	public void testProxyAndConnectDebugNeverIncludeHeaderValues() throws Exception {
 		ProxyHeaderProcessor processor = new ProxyHeaderProcessor();
 		String proxy = "PROXY TCP4 injected\u001b[31m 127.0.0.1 1 2\r\nVOTE";
-		PushbackInputStream input = new PushbackInputStream(
+		PushbackInputStream proxyInput = new PushbackInputStream(
 				new ByteArrayInputStream(proxy.getBytes(StandardCharsets.US_ASCII)), 512);
-		processor.process(input, writer(), receiver);
+		Socket trustedSocket = new Socket() {
+			@Override
+			public InetAddress getInetAddress() {
+				return InetAddress.getLoopbackAddress();
+			}
+		};
+		assertThrows(InvalidVoteException.class, () -> processor.process(proxyInput, writer(), receiver, trustedSocket));
 		String connect = "CONNECT vote.example:443 HTTP/1.1\r\nAuthorization: secret-value\u001b[31m\r\n\r\nVOTE";
-		input = new PushbackInputStream(new ByteArrayInputStream(connect.getBytes(StandardCharsets.US_ASCII)), 512);
+		PushbackInputStream input = new PushbackInputStream(
+				new ByteArrayInputStream(connect.getBytes(StandardCharsets.US_ASCII)), 512);
 		processor.process(input, writer(), receiver);
 		assertFalse(allLogs().contains("injected"));
 		assertFalse(allLogs().contains("secret-value"));
@@ -264,6 +272,7 @@ public class VoteLoggingSecurityTest {
 		@Override public String getVersion() { return "test"; }
 		@Override public String getChallenge() { return "challenge"; }
 		@Override public boolean isUseTokens() { return true; }
+		@Override public Set<String> getTrustedProxyIps() { return Collections.singleton("127.0.0.1"); }
 		@Override public Set<String> getServers() { return forwardServer == null ? Collections.emptySet() : Collections.singleton("backend"); }
 		@Override public ForwardServer getServerData(String server) { return forwardServer; }
 		@Override public KeyPair getKeyPair() { return keyPair; }

@@ -9,6 +9,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PushbackInputStream;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
@@ -68,7 +69,37 @@ public class ProxyHeaderProcessorSecurityTest {
 		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
 		PushbackInputStream input = input(header + payload);
 
-		ProxyHeaderProcessor.ProxyHeaderResult result = processor.process(input, writer(), receiver);
+		ProxyHeaderProcessor.ProxyHeaderResult result = processor.process(input, writer(), receiver, new RecordingSocket());
+
+		assertEquals("192.0.2.10", result.getRealIp());
+		assertEquals(payload, readRemaining(input));
+	}
+
+	@Test
+	public void testLinkLocalIpv6PeerCannotGainTrustWithoutAnInterfaceScope() throws Exception {
+		receiver = new StubVoteReceiver("127.0.0.1", 0) {
+			@Override
+			public Set<String> getTrustedProxyIps() {
+				return Collections.singleton("fe80::1");
+			}
+		};
+		String header = "PROXY TCP6 2001:db8::10 2001:db8::20 1234 8192\r\n";
+
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
+				() -> processor.process(input(header), writer(), receiver,
+						new AddressSocket(InetAddress.getByName("fe80::1"))));
+
+		assertTrue(exception.getMessage().contains("Link-local IPv6"));
+	}
+
+	@Test
+	public void testTcp6AcceptsIpv4MappedLiteral() throws Exception {
+		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
+		PushbackInputStream input = input(
+				"PROXY TCP6 ::ffff:192.0.2.10 2001:db8::1 1234 8192\r\n" + payload);
+
+		ProxyHeaderProcessor.ProxyHeaderResult result = processor.process(input, writer(), receiver,
+				new RecordingSocket());
 
 		assertEquals("192.0.2.10", result.getRealIp());
 		assertEquals(payload, readRemaining(input));
@@ -78,7 +109,7 @@ public class ProxyHeaderProcessorSecurityTest {
 	public void testProxyV1HeaderOver107BytesIsRejected() throws Exception {
 		String oversized = "PROXY " + "A".repeat(100) + "\r\n";
 		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
-				() -> processor.process(input(oversized), writer(), receiver));
+				() -> processor.process(input(oversized), writer(), receiver, new RecordingSocket()));
 
 		assertTrue(exception.getMessage().contains("exceeds 107 bytes"));
 	}
@@ -88,6 +119,21 @@ public class ProxyHeaderProcessorSecurityTest {
 		String headers = "CONNECT vote.example:443 HTTP/1.1\r\nHost: vote.example:443\r\n\r\n";
 		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
 		PushbackInputStream input = input(headers + payload);
+		ByteArrayOutputStream response = new ByteArrayOutputStream();
+		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(response, StandardCharsets.US_ASCII));
+
+		processor.process(input, writer, receiver);
+		writer.flush();
+
+		assertTrue(response.toString(StandardCharsets.US_ASCII).contains("200 Connection Established"));
+		assertEquals(payload, readRemaining(input));
+	}
+
+	@Test
+	public void testWhitespaceOnlyConnectTerminatorPreservesVotePayload() throws Exception {
+		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
+		PushbackInputStream input = input("CONNECT vote.example:443 HTTP/1.1\r\nHost: vote.example:443\r\n \t\r\n"
+				+ payload);
 		ByteArrayOutputStream response = new ByteArrayOutputStream();
 		BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(response, StandardCharsets.US_ASCII));
 
@@ -138,7 +184,7 @@ public class ProxyHeaderProcessorSecurityTest {
 	@Test
 	public void testProxyV2ReadsUseDecreasingCumulativeTimeout() throws Exception {
 		byte[] header = new byte[] { 0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
-				0x21, 0x11, 0x00, 0x03, 0x01, 0x02, 0x03 };
+				0x21, 0x11, 0x00, 0x0C, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 0, 2 };
 		ByteArrayInputStream fragmented = new ByteArrayInputStream(header) {
 			@Override
 			public synchronized int read(byte[] bytes, int offset, int length) {
@@ -178,6 +224,11 @@ public class ProxyHeaderProcessorSecurityTest {
 
 	private static class RecordingSocket extends Socket {
 
+		@Override
+		public InetAddress getInetAddress() {
+			return InetAddress.getLoopbackAddress();
+		}
+
 		private final List<Integer> recordedTimeouts = new ArrayList<>();
 		private int timeout = 5000;
 
@@ -197,10 +248,28 @@ public class ProxyHeaderProcessorSecurityTest {
 		}
 	}
 
+	private static final class AddressSocket extends RecordingSocket {
+		private final InetAddress address;
+
+		private AddressSocket(InetAddress address) {
+			this.address = address;
+		}
+
+		@Override
+		public InetAddress getInetAddress() {
+			return address;
+		}
+	}
+
 	private static class StubVoteReceiver extends VoteReceiver {
 
 		StubVoteReceiver(String host, int port) throws Exception {
 			super(host, port);
+		}
+
+		@Override
+		public Set<String> getTrustedProxyIps() {
+			return Collections.singleton("127.0.0.1");
 		}
 
 		@Override
