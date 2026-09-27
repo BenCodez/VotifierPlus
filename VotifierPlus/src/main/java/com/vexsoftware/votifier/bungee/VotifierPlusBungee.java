@@ -226,6 +226,11 @@ public class VotifierPlusBungee extends Plugin {
 				}
 
 				@Override
+				public boolean isTrustedProxyIpsConfigured() {
+					return getConfig().getData().contains("TrustedProxyIps");
+				}
+
+				@Override
 				public ThrottleConfig getThrottleConfig() {
 				  Configuration root = getConfig().getData().getSection("ConnectionThrottle");
 
