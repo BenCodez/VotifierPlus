@@ -38,6 +38,23 @@ Confirm current CI/POM settings. Use `package`, not developer/install profiles t
 11. Reload must establish the new listener safely and retire the old receiver without leaving two acceptors, losing the previous healthy listener on failure, or retaining stale tokens/throttle state unintentionally.
 12. Shutdown must terminate listener and connection workers within a bound and prevent callbacks after disable.
 
+## Drop-in upgrade and compatibility contract
+
+Treat compatibility as a release invariant for every new feature, refactor, fix, protocol change, storage/configuration change, and dependency change. Unless the task explicitly says otherwise, a VotifierPlus upgrade must remain a **drop-in JAR replacement**: administrators replace the existing JAR and do not need manual configuration edits, regenerated files, one-off migration scripts, extra companion JARs, or coordinated network-wide upgrades merely to preserve existing working behavior.
+
+That default contract means:
+
+- Existing configuration must remain valid. New keys must be optional, use safe defaults, and preserve established behavior when absent.
+- Preserve existing public/de-facto APIs, events, provided-plugin identity, permissions, protocol behavior, forwarding semantics, platform descriptors, and supported integrations unless an explicit breaking change is authorized.
+- Existing RSA/v1 and token/v2 behavior must not be changed accidentally under the banner of cleanup or modernization; security-sensitive compatibility changes require explicit intent, migration planning, and tests.
+- New protocol capabilities or forwarding behavior must negotiate safely with older peers and retain a safe fallback when the peer does not support the new capability.
+- Existing Bukkit/Paper/Folia, BungeeCord, and Velocity deployments must not require synchronized upgrades solely to keep previously supported behavior working.
+- Do not require administrators to install new libraries or runtime dependencies for a normal upgrade unless explicitly requested.
+- Any required persisted/configuration migration must be automatic, idempotent, restart-safe, and preserve existing state.
+- When a compatibility-preserving implementation is not practical, stop and surface the compatibility impact before implementing a breaking path unless the request explicitly permits it.
+
+For compatibility-sensitive changes, add regression coverage for established installations/protocol shapes in addition to tests for the new behavior.
+
 ## Platform and compatibility
 
 Keep Bukkit/Paper/Folia, BungeeCord, and Velocity descriptors, entry points, schedulers, event APIs, and configuration behavior aligned where intended. Do not load one platform's classes on another. Preserve the public Votifier event/API compatibility and the `Votifier` provided-plugin identity unless a breaking change is explicitly authorized.
