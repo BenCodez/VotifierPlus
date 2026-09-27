@@ -323,6 +323,12 @@ public class VotifierPlusVelocity {
 				}
 
 				@Override
+				public boolean isTrustedProxyIpsConfigured() {
+					ConfigurationNode node = getConfig().getNode("TrustedProxyIps");
+					return node != null && !node.virtual();
+				}
+
+				@Override
 				public ThrottleConfig getThrottleConfig() {
 					ConfigurationNode root = getConfig().getNode("ConnectionThrottle");
 					if (root == null || root.virtual()) {
