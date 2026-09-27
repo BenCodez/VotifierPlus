@@ -10,6 +10,7 @@ import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.PushbackInputStream;
 import java.net.InetAddress;
+import java.net.Inet6Address;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
@@ -138,6 +139,11 @@ public class ProxyHeaderProcessor {
 	private void requireTrustedPeer(VoteReceiver receiver, Socket socket) throws InvalidVoteException {
 		InetAddress peer = socket == null ? null : socket.getInetAddress();
 		Set<String> configured = receiver.getTrustedProxyIps();
+		// Unscoped text cannot distinguish the interface of a link-local IPv6 peer.
+		// Fail closed instead of trusting the same address bytes on another interface.
+		if (peer instanceof Inet6Address ipv6 && ipv6.isLinkLocalAddress()) {
+			throw new InvalidVoteException("Link-local IPv6 peers cannot be trusted for PROXY protocol");
+		}
 		if (peer != null && configured != null) {
 			for (String literal : configured) {
 				if (literal == null) {

@@ -76,6 +76,23 @@ public class ProxyHeaderProcessorSecurityTest {
 	}
 
 	@Test
+	public void testLinkLocalIpv6PeerCannotGainTrustWithoutAnInterfaceScope() throws Exception {
+		receiver = new StubVoteReceiver("127.0.0.1", 0) {
+			@Override
+			public Set<String> getTrustedProxyIps() {
+				return Collections.singleton("fe80::1");
+			}
+		};
+		String header = "PROXY TCP6 2001:db8::10 2001:db8::20 1234 8192\r\n";
+
+		InvalidVoteException exception = assertThrows(InvalidVoteException.class,
+				() -> processor.process(input(header), writer(), receiver,
+						new AddressSocket(InetAddress.getByName("fe80::1"))));
+
+		assertTrue(exception.getMessage().contains("Link-local IPv6"));
+	}
+
+	@Test
 	public void testTcp6AcceptsIpv4MappedLiteral() throws Exception {
 		String payload = "VOTE\nsite\nuser\n127.0.0.1\ntimestamp\n";
 		PushbackInputStream input = input(
@@ -228,6 +245,19 @@ public class ProxyHeaderProcessorSecurityTest {
 
 		List<Integer> getRecordedTimeouts() {
 			return recordedTimeouts;
+		}
+	}
+
+	private static final class AddressSocket extends RecordingSocket {
+		private final InetAddress address;
+
+		private AddressSocket(InetAddress address) {
+			this.address = address;
+		}
+
+		@Override
+		public InetAddress getInetAddress() {
+			return address;
 		}
 	}
 

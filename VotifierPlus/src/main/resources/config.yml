@@ -13,9 +13,11 @@ TokenSupport: false
 # Keep this false if any configured voting site only supports V1.
 DisableV1: false
 # Only these direct socket peers may supply a PROXY protocol v1/v2 source IP.
-# Use numeric IPv4/IPv6 addresses. Keep empty unless a trusted proxy sends PROXY headers.
+# Use numeric IPv4/IPv6 addresses; link-local IPv6 peers are not supported.
+# Keep empty unless a trusted proxy sends PROXY headers.
 # This is separate from ConnectionThrottle.TunnelRemoteIps.
-# Existing configs that predate this key keep legacy PROXY behavior until this setting is added.
+# Upgrades must add every trusted proxy address here before accepting PROXY traffic.
+# A missing or empty setting rejects all PROXY v1/v2 headers.
 TrustedProxyIps: []
 
 # -----------------------------------------------------------------------------
