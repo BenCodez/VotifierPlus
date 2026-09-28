@@ -226,9 +226,9 @@ Do not inflate ordinary dependency hygiene into runtime critical severity. Keep 
 
 **Critical:** remotely reachable unauthenticated vote creation in a deployment explicitly configured for v2-only/token authentication, including any bypass that accepts a legacy V1 vote while `DisableV1=true`; HMAC/challenge/key-selection bypass; remote arbitrary server/JVM code execution; remote leakage of private RSA keys/tokens.
 
-**High:** downgrade or protocol-confusion weaknesses that do not themselves produce an accepted unauthenticated vote under an explicitly v2-only policy; practical replay/duplicate forwarding causing repeat rewards at scale; moderate-traffic worker/queue/memory exhaustion; trusted-proxy bypass enabling effective throttle evasion; forwarding auth bugs that inject unauthenticated backend votes.
+**High:** practical replay/duplicate forwarding causing repeat rewards at scale; moderate-traffic worker/queue/memory exhaustion; trusted-proxy bypass enabling effective throttle evasion; forwarding authentication bugs that inject unauthenticated backend votes; protocol/downgrade confusion only when it produces a comparably high-impact integrity or availability consequence without meeting the Critical unauthenticated-vote condition.
 
-**Medium:** downstream-dangerous field ambiguity with a realistic common sink; default-token cross-service confusion after a token leak; parser fragmentation/confusion without auth bypass; reload races causing duplicate/missed votes; secret exposure to limited operators/log readers.
+**Medium:** downstream-dangerous field ambiguity with a realistic common sink; default-token cross-service confusion after a token leak; parser fragmentation, downgrade, or protocol confusion that causes vote loss, rejection, or operational inconsistency **without** an authentication bypass or other High-impact consequence; reload races causing duplicate/missed votes; secret exposure to limited operators/log readers.
 
 **Low:** admin-only footguns, malformed trusted config, build hardening without privileged-token exposure, cosmetic logging issues, or API misuse requiring a fully malicious installed plugin.
 
