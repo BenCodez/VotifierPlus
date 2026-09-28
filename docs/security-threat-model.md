@@ -23,15 +23,15 @@ The highest-value properties are:
 
 ### Remote attacker-controlled
 
-Treat every TCP connection and its timing/fragmentation as hostile. This includes protocol prefixes, V1 ciphertext, V2 JSON, payload, signature, challenge response, service name, username, address, timestamp, packet length, concatenated packets, partial packets, disconnect timing, PROXY/CONNECT bytes, and direct peer address.
+Treat every TCP connection and its timing/fragmentation as hostile. This includes protocol prefixes, V1 ciphertext, V2 JSON, payload, signature, challenge response, service name, username, address, timestamp, packet length, concatenated packets, partial packets, disconnect timing, PROXY/CONNECT bytes, and direct peer address. A party that merely has the normally distributed V1 public key and can construct an accepted legacy V1 packet remains in this unauthenticated remote-attacker boundary; V1 encryption does not authenticate the sender.
 
 PROXY-reported source addresses are authoritative only after the **direct socket peer** is validated against `TrustedProxyIPs`.
 
-### Authenticated but still untrusted
+### V2-authenticated but still untrusted
 
-A real voting service, leaked token holder, or actor capable of producing an accepted legacy V1 packet may submit syntactically authenticated traffic. Authentication does not make service names, usernames, addresses, timestamps, or other payload fields safe for downstream interpreters.
+A real V2 voting service or other holder of a valid shared token may submit HMAC-authenticated traffic. That authentication proves possession of the selected V2 token and challenge response; it does not make service names, usernames, addresses, timestamps, or other payload fields safe for downstream interpreters.
 
-A compromised token holder can also send many separately valid votes unless a higher layer implements semantic duplicate/freshness policy.
+Legacy V1 acceptance is **not** sender authentication and stays in the remote-attacker boundary above. A compromised V2 token holder can also send many separately valid votes unless a higher layer implements semantic duplicate/freshness policy.
 
 ### Trusted operator input
 
@@ -224,9 +224,9 @@ Do not inflate ordinary dependency hygiene into runtime critical severity. Keep 
 
 ## Scan calibration and severity
 
-**Critical:** remotely reachable unauthenticated vote creation in a deployment explicitly configured for v2-only/token authentication; HMAC/challenge/key-selection bypass; remote arbitrary server/JVM code execution; remote leakage of private RSA keys/tokens.
+**Critical:** remotely reachable unauthenticated vote creation in a deployment explicitly configured for v2-only/token authentication, including any bypass that accepts a legacy V1 vote while `DisableV1=true`; HMAC/challenge/key-selection bypass; remote arbitrary server/JVM code execution; remote leakage of private RSA keys/tokens.
 
-**High:** V2-to-V1 downgrade despite `DisableV1=true`; practical replay/duplicate forwarding causing repeat rewards at scale; moderate-traffic worker/queue/memory exhaustion; trusted-proxy bypass enabling effective throttle evasion; forwarding auth bugs that inject unauthenticated backend votes.
+**High:** downgrade or protocol-confusion weaknesses that do not themselves produce an accepted unauthenticated vote under an explicitly v2-only policy; practical replay/duplicate forwarding causing repeat rewards at scale; moderate-traffic worker/queue/memory exhaustion; trusted-proxy bypass enabling effective throttle evasion; forwarding auth bugs that inject unauthenticated backend votes.
 
 **Medium:** downstream-dangerous field ambiguity with a realistic common sink; default-token cross-service confusion after a token leak; parser fragmentation/confusion without auth bypass; reload races causing duplicate/missed votes; secret exposure to limited operators/log readers.
 
