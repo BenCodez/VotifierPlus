@@ -112,7 +112,7 @@ Search for:
 - header length enforcement off by one, after allocation, or bypassed by missing terminators/fragmentation;
 - spoofed effective addresses evading throttle buckets or poisoning audit data.
 
-PROXY metadata that is ignored from an untrusted peer is expected safe behavior, not a finding.
+A recognizable PROXY v1/v2 header from an untrusted direct peer must fail closed: the connection is rejected and no vote is produced. Continuing after consuming such a header, even while falling back to the socket address, weakens the established boundary and should be treated as a regression.
 
 ## Resource exhaustion and abuse control
 
