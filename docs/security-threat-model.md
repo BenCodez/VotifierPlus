@@ -76,7 +76,7 @@ High-value questions are:
 - can reload briefly restore legacy acceptance after v2-only was configured?
 - can forwarding downgrade an accepted V2 vote to a weaker form without an explicit trusted configuration decision?
 
-Any V2-to-V1 downgrade is especially important when the deployment explicitly selected `DisableV1=true`.
+Any **unintended inbound** V2-to-V1 downgrade or V1 acceptance by the receiving listener is especially important when the deployment explicitly selected `DisableV1=true`. Do not apply this warning to an operator-configured forwarding target that intentionally omits a token and therefore uses legacy V1 by design.
 
 ## V2 authentication and parsing
 
@@ -189,7 +189,7 @@ Search for:
 
 ## Secrets and logging
 
-Tokens, private RSA material, forwarding credentials, and decrypted authenticated payloads must not be exposed to remote clients or routine logs.
+Tokens, forwarding credentials, reusable authentication secrets, and decrypted authenticated payloads must not be exposed to remote clients or routine logs. V1 RSA private-key material is still sensitive, but its impact is primarily confidentiality of captured legacy V1 traffic rather than sender authentication: the corresponding public key is normally distributed and V1 acceptance does not authenticate the sender.
 
 Search debug/error paths for:
 
@@ -224,7 +224,9 @@ Do not inflate ordinary dependency hygiene into runtime critical severity. Keep 
 
 ## Scan calibration and severity
 
-**Critical:** remotely reachable unauthenticated vote creation in a deployment explicitly configured for v2-only/token authentication, including any bypass that accepts a legacy V1 vote while `DisableV1=true`; HMAC/challenge/key-selection bypass; remote arbitrary server/JVM code execution; remote leakage of private RSA keys/tokens.
+**Critical:** remotely reachable unauthenticated vote creation in a deployment explicitly configured for v2-only/token authentication, including any bypass that accepts a legacy V1 vote while `DisableV1=true`; HMAC/challenge/key-selection bypass; remote arbitrary server/JVM code execution; remote leakage of V2/shared authentication tokens or other secrets that directly enable authenticated vote forgery.
+
+Disclosure of only the receiver's legacy V1 private RSA key is **not automatically Critical** because it does not newly grant vote-submission capability; the public key is already distributed and V1 does not authenticate senders. Classify V1 private-key disclosure by the actual additional boundary crossed, such as exposure of captured vote contents, correlated sensitive metadata, or another concrete confidentiality/integrity impact.
 
 **High:** practical replay/duplicate forwarding causing repeat rewards at scale; moderate-traffic worker/queue/memory exhaustion; trusted-proxy bypass enabling effective throttle evasion; forwarding authentication bugs that inject unauthenticated backend votes; protocol/downgrade confusion only when it produces a comparably high-impact integrity or availability consequence without meeting the Critical unauthenticated-vote condition.
 
