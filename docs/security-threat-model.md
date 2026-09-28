@@ -17,7 +17,7 @@ The highest-value properties are:
 5. untrusted socket traffic must not exhaust workers, queues, memory, CPU, logs, or the Minecraft/proxy runtime;
 6. PROXY metadata must affect client identity only when supplied by an explicitly trusted direct peer;
 7. reload/shutdown must not create overlapping listeners, stale protocol policy, duplicate event delivery, or callbacks after disable;
-8. forwarding must preserve authentication and failure isolation rather than turning one accepted ingress vote into an unauthenticated backend injection path.
+8. forwarding must preserve the security semantics of the **configured target mode** and failure isolation. A target with a configured token should use the authenticated V2/challenge path without unintended downgrade; a target intentionally configured without a token uses legacy RSA/V1 forwarding by design and is not required to inherit V2 authentication from the ingress vote.
 
 ## Trust boundaries
 
@@ -159,9 +159,9 @@ Forwarding destinations are operator-controlled, so arbitrary configured destina
 
 Security review should instead test:
 
-- forwarding authentication and protocol negotiation;
+- forwarding authentication and protocol negotiation according to the target's explicit configuration;
 - whether V2 forwarding validates/uses the backend challenge correctly;
-- accidental downgrade from authenticated ingress to unauthenticated egress;
+- accidental downgrade from authenticated ingress to a weaker egress mode when the target was configured/token-capable for V2;
 - replay/duplicate forwarding on retry;
 - forwarding loops;
 - one backend's key/token being used for another destination;
@@ -170,7 +170,7 @@ Security review should instead test:
 - queue saturation changing event or connection-thread behavior;
 - sensitive forwarding credentials in logs/errors.
 
-A forwarded source should not be trusted merely because it is another configured Minecraft server.
+A forwarded source should not be trusted merely because it is another configured Minecraft server. Likewise, do not classify an operator's explicit choice of a tokenless/V1 forwarding target as an authentication bypass by itself; report an unintended downgrade, wrong-target credential use, or behavior that violates the target's configured protocol mode.
 
 ## Event delivery, threading and lifecycle
 
