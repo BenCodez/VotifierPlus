@@ -2,6 +2,10 @@
 
 VotifierPlus accepts Internet-facing vote submissions and emits or forwards vote events on Bukkit/Paper/Folia, BungeeCord, and Velocity. Treat every socket byte, proxy header, service name, username, token identifier, forwarding target, and configuration value as untrusted input.
 
+## Security threat model
+
+For security reviews, vulnerability triage, and security-sensitive changes, read `docs/security-threat-model.md` before classifying or fixing findings. Treat it as the repository-specific attacker/trust-boundary model; verify every conclusion against current code and tests. Do not promote compatibility, trusted-operator behavior, or generic correctness bugs into security findings unless the documented boundary is actually crossed.
+
 ## Build and verification
 
 Requirements: JDK 21+ and Maven. The Maven project is in `VotifierPlus/`.
