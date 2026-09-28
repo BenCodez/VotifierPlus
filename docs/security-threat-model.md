@@ -10,7 +10,7 @@ VotifierPlus runs on Bukkit/Spigot/Paper/Folia, BungeeCord, and Velocity. It acc
 
 The highest-value properties are:
 
-1. only a sender authorized under the configured protocol policy can create a vote;
+1. authenticated protocols must only accept senders authorized under the configured protocol policy. Legacy V1 is the explicit compatibility exception: when `DisableV1=false`, possession of the normally distributed public key is sufficient to construct an accepted V1 packet, so V1 acceptance does not provide or promise sender authorization;
 2. `DisableV1=true` must actually enforce v2-only/token-authenticated operation without fallback;
 3. authenticated V2 votes and forwarded votes must not be replayed, duplicated, looped, or delivered more times than their intended contract permits. Legacy V1 has no nonce, challenge, or replay cache, so replay of an otherwise valid V1 packet while `DisableV1=false` is an intentional limitation of the supported legacy protocol rather than a blanket replay-prevention guarantee;
 4. attacker-controlled vote fields must remain data and not become commands, SQL, paths, placeholders, log control sequences, or downstream syntax;
@@ -224,13 +224,13 @@ Do not inflate ordinary dependency hygiene into runtime critical severity. Keep 
 
 ## Scan calibration and severity
 
-**Critical:** remotely reachable unauthenticated vote creation in a deployment explicitly configured for v2-only/token authentication, including any bypass that accepts a legacy V1 vote while `DisableV1=true`; HMAC/challenge/key-selection bypass; remote arbitrary server/JVM code execution; remote leakage of V2/shared authentication tokens or other secrets that directly enable authenticated vote forgery.
+**Critical:** remotely reachable unauthenticated vote creation in a deployment explicitly configured for v2-only/token authentication, including any bypass that accepts a legacy V1 vote while `DisableV1=true`; HMAC or challenge verification bypass; a key-selection flaw that lets an attacker create a V2 vote **without possessing any token authorized for the accepted service/trust domain**; remote arbitrary server/JVM code execution; remote leakage of V2/shared authentication tokens or other secrets that directly enable authenticated vote forgery.
 
 Disclosure of only the receiver's legacy V1 private RSA key is **not automatically Critical** because it does not newly grant vote-submission capability; the public key is already distributed and V1 does not authenticate senders. Classify V1 private-key disclosure by the actual additional boundary crossed, such as exposure of captured vote contents, correlated sensitive metadata, or another concrete confidentiality/integrity impact.
 
 **High:** practical replay/duplicate forwarding causing repeat rewards at scale; moderate-traffic worker/queue/memory exhaustion; trusted-proxy bypass enabling effective throttle evasion; forwarding authentication bugs that inject unauthenticated backend votes; protocol/downgrade confusion only when it produces a comparably high-impact integrity or availability consequence without meeting the Critical unauthenticated-vote condition.
 
-**Medium:** downstream-dangerous field ambiguity with a realistic common sink; default-token cross-service confusion after a token leak; parser fragmentation, downgrade, or protocol confusion that causes vote loss, rejection, or operational inconsistency **without** an authentication bypass or other High-impact consequence; reload races causing duplicate/missed votes; secret exposure to limited operators/log readers.
+**Medium:** downstream-dangerous field ambiguity with a realistic common sink; default-token or cross-service key-selection confusion where the attacker already possesses a valid token but can apply it beyond its intended service scope, without obtaining unauthenticated vote creation; parser fragmentation, downgrade, or protocol confusion that causes vote loss, rejection, or operational inconsistency **without** an authentication bypass or other High-impact consequence; reload races causing duplicate/missed votes; secret exposure to limited operators/log readers.
 
 **Low:** admin-only footguns, malformed trusted config, build hardening without privileged-token exposure, cosmetic logging issues, or API misuse requiring a fully malicious installed plugin.
 
