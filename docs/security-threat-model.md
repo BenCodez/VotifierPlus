@@ -12,7 +12,7 @@ The highest-value properties are:
 
 1. only a sender authorized under the configured protocol policy can create a vote;
 2. `DisableV1=true` must actually enforce v2-only/token-authenticated operation without fallback;
-3. a valid vote must not be replayed, duplicated, looped, or forwarded more times than the intended delivery contract;
+3. authenticated V2 votes and forwarded votes must not be replayed, duplicated, looped, or delivered more times than their intended contract permits. Legacy V1 has no nonce, challenge, or replay cache, so replay of an otherwise valid V1 packet while `DisableV1=false` is an intentional limitation of the supported legacy protocol rather than a blanket replay-prevention guarantee;
 4. attacker-controlled vote fields must remain data and not become commands, SQL, paths, placeholders, log control sequences, or downstream syntax;
 5. untrusted socket traffic must not exhaust workers, queues, memory, CPU, logs, or the Minecraft/proxy runtime;
 6. PROXY metadata must affect client identity only when supplied by an explicitly trusted direct peer;
@@ -65,7 +65,7 @@ A finding is most valuable when it demonstrates a way around one of these contro
 
 Votifier V1 is legacy RSA encryption and does not provide the same sender-authentication semantics as V2 token/HMAC. The public key is normally distributed to voting sites.
 
-Legacy V1 compatibility is intentional when `DisableV1=false`. Do not report the default compatibility choice alone as a vulnerability.
+Legacy V1 compatibility is intentional when `DisableV1=false`. V1 has no per-vote challenge, nonce, or replay cache, so replaying the same correctly encrypted V1 packet is inherent to that legacy protocol. Do not report the default compatibility choice or that inherent V1 replay property alone as a vulnerability. Replay becomes security-relevant when code violates an explicitly stronger contract, such as accepting V1 while `DisableV1=true`, replaying authenticated V2/forwarded traffic beyond its intended semantics, or introducing an attacker-controlled amplification beyond one legacy packet replay.
 
 High-value questions are:
 
