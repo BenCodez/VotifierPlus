@@ -25,7 +25,7 @@ The highest-value properties are:
 
 Treat every TCP connection and its timing/fragmentation as hostile. This includes protocol prefixes, V1 ciphertext, V2 JSON, payload, signature, challenge response, service name, username, address, timestamp, packet length, concatenated packets, partial packets, disconnect timing, PROXY/CONNECT bytes, and direct peer address. A party that merely has the normally distributed V1 public key and can construct an accepted legacy V1 packet remains in this unauthenticated remote-attacker boundary; V1 encryption does not authenticate the sender.
 
-PROXY-reported source addresses are authoritative only after the **direct socket peer** is validated against `TrustedProxyIPs`.
+PROXY-reported source addresses are authoritative only after the **direct socket peer** is validated against `TrustedProxyIps`.
 
 ### V2-authenticated but still untrusted
 
