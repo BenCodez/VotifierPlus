@@ -47,6 +47,7 @@ Current master already includes important hardening. Security scans should test 
 
 - `DisableV1` rejects legacy V1 and forces v2-only policy when selected;
 - enabling `TokenSupport` without `DisableV1` emits a warning because V1 compatibility remains intentionally enabled;
+- `TokenSupport` controls the advertised handshake/compatibility behavior; it does **not** disable inbound V2 parsing. The parser detects framed/unframed V2 regardless of `TokenSupport`, and configured tokens are still used to authenticate such V2 packets. Do not invent a "V2 disabled" security boundary from `TokenSupport=false`;
 - V2 uses HMAC-SHA256 and per-connection challenges;
 - V2 packet reads have an absolute deadline and explicit packet-size bound;
 - V1 reads a fixed 256-byte RSA block;
@@ -80,7 +81,7 @@ Any **unintended inbound** V2-to-V1 downgrade or V1 acceptance by the receiving 
 
 ## V2 authentication and parsing
 
-V2 authentication should bind the exact payload, correct token, and connection challenge before event delivery or forwarding.
+V2 authentication should bind the exact payload, correct token, and connection challenge before event delivery or forwarding. Inbound V2 parsing is available independently of `TokenSupport`; that setting affects which handshake is advertised, while `DisableV1` is the policy switch that removes legacy V1 acceptance.
 
 Search for:
 
