@@ -2,6 +2,10 @@
 
 VotifierPlus accepts Internet-facing vote submissions and emits or forwards vote events on Bukkit/Paper/Folia, BungeeCord, and Velocity. Treat every socket byte, proxy header, service name, username, token identifier, forwarding target, and configuration value as untrusted input.
 
+## Security threat model
+
+For security reviews, vulnerability triage, and security-sensitive changes, read `docs/security-threat-model.md` before classifying or fixing findings. Treat it as the repository-specific attacker/trust-boundary model; verify every conclusion against current code and tests. Do not promote compatibility, trusted-operator behavior, or generic correctness bugs into security findings unless the documented boundary is actually crossed.
+
 ## Build and verification
 
 Requirements: JDK 21+ and Maven. The Maven project is in `VotifierPlus/`.
@@ -28,12 +32,12 @@ Confirm current CI/POM settings. Use `package`, not developer/install profiles t
 1. Bound connection count, accept rate, per-client failures, request bytes, line/frame length, parsing work, queues, forwarding batches, and log volume before expensive or authenticated work.
 2. Apply read/connect/write deadlines and close sockets/streams on every success, rejection, timeout, exception, reload, and shutdown path.
 3. Protocol selection must be explicit. Token/v2-only operation must not silently accept legacy v1/RSA packets; changes must not create downgrade or fallback acceptance.
-4. Authenticate the actual protocol identity before emitting or forwarding a vote. Encryption is not authorization.
+4. For protocol modes that promise sender authentication, authenticate the actual protocol identity before emitting or forwarding a vote. Encryption is not authorization. Preserve the documented compatibility exceptions in `docs/security-threat-model.md`: enabled legacy V1 does not authenticate the sender, and an explicitly tokenless forwarding target intentionally uses legacy V1. Do not reinterpret those supported modes as authentication failures.
 5. Compare tokens and other secrets safely; generate them with a cryptographically secure source; never log private keys, tokens, decrypted packets, or forwarding credentials.
 6. PROXY protocol data is authoritative only from explicitly trusted tunnel/source addresses. Untrusted peers must not choose the client IP used by throttling or auditing.
 7. Normalize and validate service, username, address, timestamp, token identifier, server name, and forwarding target without changing established compatibility unexpectedly.
 8. Throttling and bans must use the verified client identity, remain memory-bounded, expire entries, resist cardinality attacks, and avoid bypass through reconnects or spoofed headers.
-9. Forwarding must have its own authentication, bounds, deadlines, replay/duplicate behavior, and partial-failure handling. Never treat a forwarded source as trusted solely because it is another configured server.
+9. Forwarding must honor the security semantics of the configured target mode, plus bounds, deadlines, replay/duplicate behavior, and partial-failure handling. Token-configured targets require their V2 authentication path; explicitly tokenless targets may use the documented legacy V1 compatibility path. Never treat a forwarded source as trusted solely because it is another configured server.
 10. Vote delivery must not occur twice because of retry, protocol ambiguity, forwarding loops, reload overlap, or multiple platform handlers.
 11. Reload must establish the new listener safely and retire the old receiver without leaving two acceptors, losing the previous healthy listener on failure, or retaining stale tokens/throttle state unintentionally.
 12. Shutdown must terminate listener and connection workers within a bound and prevent callbacks after disable.
