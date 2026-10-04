@@ -29,7 +29,10 @@ public final class VotifierDiagnostics {
                     continue;
                 }
                 ForwardServer server = receiver.getServerData(name);
-                if (server != null && server.isEnabled()) {
+                if (server == null) {
+                    // A configured entry that cannot be classified is incomplete evidence.
+                    forwardingKnown = false;
+                } else if (server.isEnabled()) {
                     if (name.length() > VotifierDiagnosticsSnapshot.MAX_NAME_LENGTH
                             || destinations.size() >= VotifierDiagnosticsSnapshot.MAX_DESTINATIONS) {
                         // Do not claim complete evidence after the bounded snapshot omitted a risk.

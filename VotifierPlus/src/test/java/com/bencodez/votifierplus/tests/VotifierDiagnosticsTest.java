@@ -81,6 +81,18 @@ class VotifierDiagnosticsTest {
     }
 
     @Test
+    void unclassifiableConfiguredTargetDoesNotBecomeDisabledForwarding() throws Exception {
+        TestReceiver receiver = new TestReceiver(-2);
+        try {
+            VotifierDiagnosticsSnapshot snapshot = VotifierDiagnostics.snapshot(receiver);
+            assertEquals(Boolean.FALSE, snapshot.getForwardingKnown());
+            assertEquals(List.of(), snapshot.getForwardingDestinations());
+        } finally {
+            receiver.getServer().close();
+        }
+    }
+
+    @Test
     void receiverReplacementsAreSafelyPublishedOnEveryPlatform() throws Exception {
         for (String type : List.of("com.vexsoftware.votifier.VotifierPlus",
                 "com.vexsoftware.votifier.bungee.VotifierPlusBungee",
@@ -131,6 +143,7 @@ class VotifierDiagnosticsTest {
         @Override public String getVersion() { return "test"; }
         @Override public Set<String> getServers() {
             if (destinationCount == -1) return Set.of("backend", " backend ");
+            if (destinationCount == -2) return Set.of("missing");
             if (destinationCount == 2) return Set.of("backend", "disabled");
             java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<String>();
             for (int i = 0; i < destinationCount; i++) names.add("backend-" + i);
@@ -139,6 +152,7 @@ class VotifierDiagnosticsTest {
         @Override public KeyPair getKeyPair() { return null; }
         @Override public Map<String, Key> getTokens() { return Collections.emptyMap(); }
         @Override public ForwardServer getServerData(String name) {
+            if ("missing".equals(name)) return null;
             return new ForwardServer(!"disabled".equals(name), "private-host", 8192, "secret-key",
                     null);
         }
