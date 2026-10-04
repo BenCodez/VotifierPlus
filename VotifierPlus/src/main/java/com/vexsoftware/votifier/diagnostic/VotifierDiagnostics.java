@@ -30,14 +30,14 @@ public final class VotifierDiagnostics {
                 }
                 ForwardServer server = receiver.getServerData(name);
                 if (server != null && server.isEnabled()) {
-                    String trimmed = name.trim();
-                    if (trimmed.length() > VotifierDiagnosticsSnapshot.MAX_NAME_LENGTH
+                    if (name.length() > VotifierDiagnosticsSnapshot.MAX_NAME_LENGTH
                             || destinations.size() >= VotifierDiagnosticsSnapshot.MAX_DESTINATIONS) {
                         // Do not claim complete evidence after the bounded snapshot omitted a risk.
                         forwardingKnown = false;
                         continue;
                     }
-                    destinations.add(trimmed);
+                    // Preserve configured identity; snapshot validation downgrades noncanonical names.
+                    destinations.add(name);
                 }
             }
         } catch (RuntimeException unavailable) {

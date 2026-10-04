@@ -69,6 +69,18 @@ class VotifierDiagnosticsTest {
     }
 
     @Test
+    void distinctWhitespacePaddedTargetsDoNotBecomeCompleteNormalizedEvidence() throws Exception {
+        TestReceiver receiver = new TestReceiver(-1);
+        try {
+            VotifierDiagnosticsSnapshot snapshot = VotifierDiagnostics.snapshot(receiver);
+            assertEquals(Boolean.FALSE, snapshot.getForwardingKnown());
+            assertEquals(List.of("backend"), snapshot.getForwardingDestinations());
+        } finally {
+            receiver.getServer().close();
+        }
+    }
+
+    @Test
     void platformEntryPointsExposeTheOptionalAccessor() throws Exception {
         assertTrue(Class.forName("com.vexsoftware.votifier.VotifierPlus")
                 .getMethod("getNetworkHealthSnapshot") != null);
@@ -108,6 +120,7 @@ class VotifierDiagnosticsTest {
         @Override public void debug(Exception e) { }
         @Override public String getVersion() { return "test"; }
         @Override public Set<String> getServers() {
+            if (destinationCount == -1) return Set.of("backend", " backend ");
             if (destinationCount == 2) return Set.of("backend", "disabled");
             java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<String>();
             for (int i = 0; i < destinationCount; i++) names.add("backend-" + i);
