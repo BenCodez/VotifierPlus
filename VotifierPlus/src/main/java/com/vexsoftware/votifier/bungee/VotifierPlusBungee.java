@@ -19,6 +19,8 @@ import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
 import com.vexsoftware.votifier.crypto.TokenUtil;
+import com.vexsoftware.votifier.diagnostic.VotifierDiagnostics;
+import com.vexsoftware.votifier.diagnostic.VotifierDiagnosticsSnapshot;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.ThrottleConfig;
 import com.vexsoftware.votifier.net.VoteReceiver;
@@ -31,6 +33,11 @@ import net.md_5.bungee.config.Configuration;
 import net.md_5.bungee.config.ConfigurationProvider;
 
 public class VotifierPlusBungee extends Plugin {
+
+	/** Optional read-only management-plane snapshot; never participates in vote processing. */
+	public VotifierDiagnosticsSnapshot getNetworkHealthSnapshot() {
+		return VotifierDiagnostics.snapshot(voteReceiver);
+	}
 	private VotifierPlusBungee instance;
 	@Getter
 	private VoteReceiver voteReceiver;

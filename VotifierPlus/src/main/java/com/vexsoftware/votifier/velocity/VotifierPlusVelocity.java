@@ -34,6 +34,8 @@ import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
 import com.vexsoftware.votifier.crypto.TokenUtil;
+import com.vexsoftware.votifier.diagnostic.VotifierDiagnostics;
+import com.vexsoftware.votifier.diagnostic.VotifierDiagnosticsSnapshot;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.ThrottleConfig;
 import com.vexsoftware.votifier.net.VoteReceiver;
@@ -45,6 +47,11 @@ import lombok.Setter;
 @Plugin(id = "votifierplus", name = "VotifierPlus", version = "1.0", url = "https://www.spigotmc.org/resources/votifierplus.74040", description = "Votifier Velocity Version", authors = {
 		"BenCodez" })
 public class VotifierPlusVelocity {
+
+	/** Optional read-only management-plane snapshot; never participates in vote processing. */
+	public VotifierDiagnosticsSnapshot getNetworkHealthSnapshot() {
+		return VotifierDiagnostics.snapshot(voteReceiver);
+	}
 	@Getter
 	private VoteReceiver voteReceiver;
 	@Getter
