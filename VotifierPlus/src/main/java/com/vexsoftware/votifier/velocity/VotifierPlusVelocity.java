@@ -53,7 +53,7 @@ public class VotifierPlusVelocity {
 		return VotifierDiagnostics.snapshot(voteReceiver);
 	}
 	@Getter
-	private VoteReceiver voteReceiver;
+	private volatile VoteReceiver voteReceiver;
 	@Getter
 	private Config config;
 	@Getter

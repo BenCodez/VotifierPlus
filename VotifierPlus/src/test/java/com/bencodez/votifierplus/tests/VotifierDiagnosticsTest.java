@@ -81,6 +81,16 @@ class VotifierDiagnosticsTest {
     }
 
     @Test
+    void receiverReplacementsAreSafelyPublishedOnEveryPlatform() throws Exception {
+        for (String type : List.of("com.vexsoftware.votifier.VotifierPlus",
+                "com.vexsoftware.votifier.bungee.VotifierPlusBungee",
+                "com.vexsoftware.votifier.velocity.VotifierPlusVelocity")) {
+            assertTrue(java.lang.reflect.Modifier.isVolatile(Class.forName(type)
+                    .getDeclaredField("voteReceiver").getModifiers()), type);
+        }
+    }
+
+    @Test
     void platformEntryPointsExposeTheOptionalAccessor() throws Exception {
         assertTrue(Class.forName("com.vexsoftware.votifier.VotifierPlus")
                 .getMethod("getNetworkHealthSnapshot") != null);

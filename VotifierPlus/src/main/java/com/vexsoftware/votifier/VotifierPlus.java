@@ -90,7 +90,7 @@ public class VotifierPlus extends JavaPlugin {
 	private Updater updater;
 
 	/** The vote receiver. */
-	private VoteReceiver voteReceiver;
+	private volatile VoteReceiver voteReceiver;
 
 	/** The RSA key pair. */
 	@Setter

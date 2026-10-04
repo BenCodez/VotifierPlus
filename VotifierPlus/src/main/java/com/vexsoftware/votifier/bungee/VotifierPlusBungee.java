@@ -40,7 +40,7 @@ public class VotifierPlusBungee extends Plugin {
 	}
 	private VotifierPlusBungee instance;
 	@Getter
-	private VoteReceiver voteReceiver;
+	private volatile VoteReceiver voteReceiver;
 	@Getter
 	private Config config;
 	@Getter
