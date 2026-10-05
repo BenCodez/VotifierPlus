@@ -55,6 +55,8 @@ import com.vexsoftware.votifier.config.Config;
 import com.vexsoftware.votifier.crypto.RSAIO;
 import com.vexsoftware.votifier.crypto.RSAKeygen;
 import com.vexsoftware.votifier.crypto.TokenUtil;
+import com.vexsoftware.votifier.diagnostic.VotifierDiagnostics;
+import com.vexsoftware.votifier.diagnostic.VotifierDiagnosticsSnapshot;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.model.VotifierEvent;
 import com.vexsoftware.votifier.net.ThrottleConfig;
@@ -72,6 +74,11 @@ import lombok.Setter;
  */
 public class VotifierPlus extends JavaPlugin {
 
+	/** Optional read-only management-plane snapshot; never participates in vote processing. */
+	public VotifierDiagnosticsSnapshot getNetworkHealthSnapshot() {
+		return VotifierDiagnostics.snapshot(voteReceiver);
+	}
+
 	/** The Votifier instance. */
 	private static VotifierPlus instance;
 
@@ -83,7 +90,7 @@ public class VotifierPlus extends JavaPlugin {
 	private Updater updater;
 
 	/** The vote receiver. */
-	private VoteReceiver voteReceiver;
+	private volatile VoteReceiver voteReceiver;
 
 	/** The RSA key pair. */
 	@Setter
