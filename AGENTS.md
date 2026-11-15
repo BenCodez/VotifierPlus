@@ -86,6 +86,16 @@ For substantive protocol, security-compatibility, or architecture tasks, read re
 <!-- mex-agent:skills:start -->
 ## MEX agent skills
 - At the start of every session, use the configured project knowledge reader to verify the private MEX projection, then read its `.mex/AGENTS.md` and `.mex/ROUTER.md` and follow the router for relevant context. Run knowledge queries in that projection; read checkout-local drafts and preferences in the writable workspace when applicable. Report an unavailable reader rather than substituting another project's memory.
+- If the project reader is not configured, ask the maintainer for the approved platform helper, project-specific admission bound to your exact clean checkout and its independently supplied admission SHA-256, immutable archive revision, isolated projection, and separate hash-verified skill snapshot, using your own authorized access. Do not copy credentials or derive an approval pin from an arbitrary download. If the bundle or access is unavailable, report it and stop memory-dependent work until it is available; do not substitute another project's memory.
+- For a separately approved source-removal admission, replace the placeholders below with the maintainer-provided values and run the existing bounded query helper. It verifies the admission before and after the query and returns only admitted `.mex` paths. Open the returned files under the approved projection, and read its `.mex/AGENTS.md` and `.mex/ROUTER.md`. Read Inbox and Relay from the separate verified skill snapshot bound to the same source and archive revision; do not place the skill instruction root in the read-only projection. If verification or lookup fails, stop and request corrected access or configuration.
+
+  ```sh
+  python3 /path/to/approved-platform/scripts/query_knowledge_reader.py \
+    --manifest /private/admission.json --manifest-sha256 INDEPENDENTLY_PROVIDED_PIN \
+    --project CURRENT_FRESH_CHECKOUT --reader APPROVED_PROJECTION \
+    --removal-mode --limit 10 protocol
+  ```
+
 - Read `mex logging --json` at session start and before optional logging. Its checkout-local advisory mode is `significant` (quiet default: material decisions, risks, blockers, or durable discoveries), `checkpoints` (batch useful notes at task/session boundaries), or `manual` (no unsolicited notes). Skip routine tool calls, edits, repeated status, and empty summaries. Honor explicit user log requests in every mode; never suppress mandatory workflow Activity or recovery audit records. Report a policy read failure instead of guessing or changing the preference.
 - When earlier work may inform the task, retrieve bounded relevant notes with `mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json`, using the known subject or exact recorded file path, or both. Treat matches as historical evidence, not accepted current knowledge; verify conclusions before reuse or explicit promotion with their source retained.
 - Read `.agents/skills/mex-inbox/SKILL.md` and `.agents/skills/mex-relay/SKILL.md` from this project's entry in the verified private knowledge archive. Perform MEX writes only through a supported writable project workspace and its publication workflow, never in the read-only projection; report an unavailable workspace.
