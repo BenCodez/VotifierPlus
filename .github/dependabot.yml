@@ -9,3 +9,7 @@ updates:
     directory: "/VotifierPlus/" # Location of package manifests
     schedule:
       interval: "weekly"
+    # Velocity 4.x requires Java 25; retain the Java 21-compatible API baseline.
+    ignore:
+      - dependency-name: "com.velocitypowered:velocity-api"
+        update-types: ["version-update:semver-major"]
