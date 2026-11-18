@@ -155,8 +155,10 @@ public class VoteConnectionHandler {
 			throttleService.logWarning(receiver, "timeout|" + remoteIp,
 					"Connection timeout while waiting for vote payload from " + remoteIp);
 		} catch (SocketException ex) {
-			throttleService.logWarning(receiver, "socket|" + remoteIp,
-					"Connection error: Protocol error from " + remoteIp);
+			if (!receiver.isStopping()) {
+				throttleService.logWarning(receiver, "socket|" + remoteIp,
+						"Connection error: Protocol error from " + remoteIp);
+			}
 		} catch (Exception ex) {
 			throttleService.logWarning(receiver, "generic|" + remoteIp, "Error processing vote from " + remoteIp + ": "
 					+ VoteLogSafety.exceptionType(ex));

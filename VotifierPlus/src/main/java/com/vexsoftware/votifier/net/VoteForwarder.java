@@ -1,12 +1,19 @@
 package com.vexsoftware.votifier.net;
 
 import java.io.BufferedReader;
+import java.io.FilterInputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Mac;
 
@@ -27,8 +34,12 @@ public class VoteForwarder {
 	private static final String FIELD_TIMESTAMP = "timestamp";
 	private static final String FIELD_CHALLENGE = "challenge";
 	private static final int MAX_HANDSHAKE_CHARS = 512;
+	private static final int CONNECT_TIMEOUT_MILLIS = 1000;
+	private static final int HANDSHAKE_TIMEOUT_MILLIS = 3000;
 
 	private final VoteReceiver receiver;
+	private final Set<Socket> activeSockets = new HashSet<>();
+	private volatile boolean stopped;
 
 	public VoteForwarder(VoteReceiver receiver) {
 		this.receiver = receiver;
@@ -36,6 +47,9 @@ public class VoteForwarder {
 
 	public void forwardVote(Vote vote) {
 		for (String name : receiver.getServers()) {
+			if (stopped || Thread.currentThread().isInterrupted()) {
+				return;
+			}
 			ForwardServer server = receiver.getServerData(name);
 
 			if (!server.isEnabled()) {
@@ -45,15 +59,17 @@ public class VoteForwarder {
 
 			receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + server.isUseTokens());
 
-			try (Socket socket = new Socket()) {
-				socket.connect(new InetSocketAddress(server.getHost(), server.getPort()), 1000);
-				socket.setSoTimeout(3000);
-
-				BufferedReader in = new BufferedReader(
-						new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+			Socket socket = new Socket();
+			try (socket) {
+				synchronized (activeSockets) {
+					if (stopped) {
+						return;
+					}
+					activeSockets.add(socket);
+				}
+				socket.connect(new InetSocketAddress(server.getHost(), server.getPort()), CONNECT_TIMEOUT_MILLIS);
+				String greeting = readHandshakeLine(socket, HANDSHAKE_TIMEOUT_MILLIS);
 				OutputStream out = socket.getOutputStream();
-
-				String greeting = readHandshakeLine(in);
 				receiver.debug("Received handshake from " + VoteLogSafety.field(name)
 						+ " (" + (greeting == null ? 0 : greeting.length()) + " chars)");
 
@@ -95,10 +111,55 @@ public class VoteForwarder {
 				out.flush();
 				receiver.debug("Payload forwarded to " + VoteLogSafety.field(name) + " (" + payload.length + " bytes)");
 			} catch (Exception ex) {
-				receiver.log("Failed to forward vote to " + VoteLogSafety.field(name) + ": "
-						+ VoteLogSafety.exceptionType(ex));
+				if (!stopped) {
+					receiver.log("Failed to forward vote to " + VoteLogSafety.field(name) + ": "
+							+ VoteLogSafety.exceptionType(ex));
+				}
+			} finally {
+				synchronized (activeSockets) {
+					activeSockets.remove(socket);
+				}
 			}
 		}
+	}
+
+	void stop() {
+		List<Socket> sockets;
+		synchronized (activeSockets) {
+			stopped = true;
+			sockets = List.copyOf(activeSockets);
+			activeSockets.clear();
+		}
+		for (Socket socket : sockets) {
+			try {
+				socket.close();
+			} catch (IOException ex) {
+				receiver.debug("Failed to close forwarding socket: " + VoteLogSafety.exceptionType(ex));
+			}
+		}
+	}
+
+	static String readHandshakeLine(Socket socket, int timeoutMillis) throws Exception {
+		long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+		// The decoder can make multiple reads to produce one character. Apply the
+		// remaining budget at each socket read, including CR lookahead.
+		var input = new FilterInputStream(socket.getInputStream()) {
+			@Override
+			public int read(byte[] bytes, int offset, int length) throws IOException {
+				long remaining = deadline - System.nanoTime();
+				if (remaining <= 0) {
+					throw new SocketTimeoutException("Forward handshake timed out");
+				}
+				socket.setSoTimeout((int) Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining)));
+				return super.read(bytes, offset, length);
+			}
+		};
+		var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
+		String greeting = readHandshakeLine(reader);
+		if (deadline - System.nanoTime() <= 0) {
+			throw new SocketTimeoutException("Forward handshake timed out");
+		}
+		return greeting;
 	}
 
 	static String readHandshakeLine(BufferedReader in) throws Exception {
