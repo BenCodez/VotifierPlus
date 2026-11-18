@@ -73,8 +73,10 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -82,6 +84,10 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.function.IntSupplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import javax.crypto.Cipher;
 
@@ -119,6 +125,71 @@ public abstract class VoteReceiver extends Thread {
 		initialize();
 	}
 
+	/**
+	 * Binds a receiver using explicit per-listener settings. Start it with
+	 * {@link VoteReceiver#start()} and retire it with {@link VoteReceiver#shutdown()}.
+	 *
+	 * <p>The callback is invoked on a connection worker before forwarding and may
+	 * run concurrently for different votes. It should enqueue platform work on
+	 * the appropriate scheduler and return promptly. Treat the vote as read-only
+	 * because forwarding uses the same object. The adapter owns the lifecycle of
+	 * work it enqueues on its scheduler. The receiver can invoke the callback
+	 * for connections already admitted while shutdown drains the worker pool.
+	 * The adapter must gate and drain its scheduler work during disable.
+	 *
+	 * <p>The wire response acknowledges protocol acceptance before this
+	 * callback. Callback failures are logged and forwarding can still proceed.
+	 *
+	 * @param settings listener configuration and protocol policy
+	 * @param logger logger for the receiver
+	 * @param onVote callback for a parsed, accepted vote
+	 * @return bound, unstarted receiver
+	 * @throws Exception if the listener cannot bind
+	 */
+	public static VoteReceiver bind(Settings settings, Logger logger, Consumer<Vote> onVote) throws Exception {
+		return new ConfiguredReceiver(Objects.requireNonNull(settings), Objects.requireNonNull(logger),
+				Objects.requireNonNull(onVote));
+	}
+
+	/**
+	 * Configuration for one listener. Supply a new configuration and receiver
+	 * when changing policy. Token support controls the greeting, while disableV1
+	 * requires V2 authentication. An empty trusted-proxy set trusts no peer.
+	 */
+	public record Settings(String host, int port, String version, boolean tokenSupport, boolean disableV1,
+			KeyPair keyPair, Map<String, Key> tokens, Set<String> trustedProxyIps, ThrottleConfig throttle,
+			Map<String, ForwardServer> forwarding) {
+		public Settings {
+			Objects.requireNonNull(version);
+			if (!disableV1) {
+				Objects.requireNonNull(keyPair, "Legacy V1 requires an RSA key pair");
+			}
+			tokens = Map.copyOf(tokens);
+			trustedProxyIps = Set.copyOf(trustedProxyIps);
+			Map<String, ForwardServer> targets = new LinkedHashMap<>();
+			forwarding.forEach((name, target) -> targets.put(Objects.requireNonNull(name), copyTarget(target)));
+			forwarding = Collections.unmodifiableMap(targets);
+		}
+
+		@Override
+		public Map<String, ForwardServer> forwarding() {
+			Map<String, ForwardServer> targets = new LinkedHashMap<>();
+			forwarding.forEach((name, target) -> targets.put(name, copyTarget(target)));
+			return Collections.unmodifiableMap(targets);
+		}
+
+		@Override
+		public String toString() {
+			return "VoteReceiver.Settings";
+		}
+	}
+
+	private static ForwardServer copyTarget(ForwardServer target) {
+		return new ForwardServer(target.isEnabled(), target.getHost(), target.getPort(), target.getKey(),
+				target.getToken());
+	}
+
+
 	public void initialize() throws Exception {
 		try {
 			server = new ServerSocket();
@@ -152,7 +223,7 @@ public abstract class VoteReceiver extends Thread {
 		}
 		sockets.forEach(this::closeConnection);
 		try {
-			shutdownExecutor(connectionExecutor, "connection", () -> {});
+			shutdownExecutor(connectionExecutor, "connection", null);
 		} finally {
 			shutdownExecutor(forwardExecutor, "forward", () -> voteForwarder.stop());
 		}
@@ -162,7 +233,7 @@ public abstract class VoteReceiver extends Thread {
 		return !running;
 	}
 
-	private void shutdownExecutor(ExecutorService executor, String name, Runnable cancelActive) {
+	private void shutdownExecutor(ExecutorService executor, String name, IntSupplier cancelActive) {
 		if (executor == null) {
 			return;
 		}
@@ -177,8 +248,12 @@ public abstract class VoteReceiver extends Thread {
 			} catch (InterruptedException ex) {
 				interrupted = true;
 			}
-			cancelActive.run();
-			executor.shutdownNow();
+			int discarded = executor.shutdownNow().size();
+			int closedSockets = cancelActive == null ? 0 : cancelActive.getAsInt();
+			if (cancelActive != null && (discarded != 0 || closedSockets != 0)) {
+				logWarning("Forced forwarding shutdown: discarded queued jobs=" + discarded
+						+ ", closed active sockets=" + closedSockets);
+			}
 			try {
 				if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
 					logWarning("Unable to fully shut down " + name + " executor.");
@@ -412,4 +487,120 @@ public abstract class VoteReceiver extends Thread {
 	public String getChallenge() {
 		return com.vexsoftware.votifier.crypto.TokenUtil.newToken();
 	}
+	private static final class ConfiguredReceiver extends VoteReceiver {
+		private final Settings settings;
+		private final Logger logger;
+		private final Consumer<Vote> onVote;
+
+		private ConfiguredReceiver(Settings settings, Logger logger, Consumer<Vote> onVote) throws Exception {
+			super(settings.host(), settings.port());
+			this.settings = settings;
+			this.logger = logger;
+			this.onVote = onVote;
+		}
+
+		@Override
+		public boolean isUseTokens() {
+			return settings.tokenSupport();
+		}
+
+		@Override
+		public boolean isDisableV1() {
+			return settings.disableV1();
+		}
+
+		@Override
+		public ThrottleConfig getThrottleConfig() {
+			return settings.throttle();
+		}
+
+		@Override
+		public Set<String> getTrustedProxyIps() {
+			return settings.trustedProxyIps();
+		}
+
+		@Override
+		public void logWarning(String warning) {
+			logger.warning(warning);
+		}
+
+		@Override
+		public void logSevere(String message) {
+			// The superclass can report bind failures before the adapter is initialized.
+			Logger sink = logger == null ? Logger.getLogger(VoteReceiver.class.getName()) : logger;
+			sink.severe(message);
+		}
+
+		@Override
+		public void log(String message) {
+			logger.info(message);
+		}
+
+		@Override
+		public void debug(String message) {
+			if (logger != null) {
+				logger.fine(message);
+			}
+		}
+
+		@Override
+		public void debug(Exception exception) {
+			logger.log(Level.FINE, "Vote receiver operation failed: {0}", VoteLogSafety.exceptionType(exception));
+		}
+
+		@Override
+		public String getVersion() {
+			return settings.version();
+		}
+
+		@Override
+		public Set<String> getServers() {
+			return settings.forwarding.keySet();
+		}
+
+		@Override
+		public KeyPair getKeyPair() {
+			return settings.keyPair();
+		}
+
+		@Override
+		public Map<String, Key> getTokens() {
+			return settings.tokens();
+		}
+
+		@Override
+		public ForwardServer getServerData(String name) {
+			ForwardServer target = settings.forwarding.get(name);
+			return target == null ? null : copyTarget(target);
+		}
+
+		@Override
+		public void callEvent(Vote vote) {
+			try {
+				onVote.accept(vote);
+			} catch (RuntimeException failure) {
+				logger.warning("Vote callback failed: " + VoteLogSafety.exceptionType(failure));
+			}
+		}
+
+		@Override
+		public void initialize() throws Exception {
+			if (getServer() != null) {
+				throw new IllegalStateException("Bind a new receiver to replace this listener");
+			}
+			try {
+				super.initialize();
+			} catch (Exception failure) {
+				if (getServer() != null) {
+					try {
+						getServer().close();
+					} catch (IOException closeFailure) {
+						failure.addSuppressed(closeFailure);
+					}
+				}
+				throw failure;
+			}
+		}
+	}
+
 }

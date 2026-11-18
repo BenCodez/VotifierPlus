@@ -143,6 +143,8 @@ public class VoteReceiverLifecycleTest {
 				retire.start();
 				retire.join(5000);
 				assertFalse(retire.isAlive());
+				assertTrue(receiver.getWarnings().stream().anyMatch(warning ->
+						warning.contains("discarded queued jobs=1, closed active sockets=1")));
 				stalled.setSoTimeout(2000);
 				assertEquals(-1, stalled.getInputStream().read());
 			}

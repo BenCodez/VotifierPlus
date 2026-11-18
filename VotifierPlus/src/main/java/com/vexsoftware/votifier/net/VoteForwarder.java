@@ -123,7 +123,7 @@ public class VoteForwarder {
 		}
 	}
 
-	void stop() {
+	int stop() {
 		List<Socket> sockets;
 		synchronized (activeSockets) {
 			stopped = true;
@@ -137,6 +137,7 @@ public class VoteForwarder {
 				receiver.debug("Failed to close forwarding socket: " + VoteLogSafety.exceptionType(ex));
 			}
 		}
+		return sockets.size();
 	}
 
 	static String readHandshakeLine(Socket socket, int timeoutMillis) throws Exception {

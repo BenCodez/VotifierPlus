@@ -31,18 +31,17 @@ import org.junit.jupiter.api.Test;
 import com.google.gson.JsonObject;
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.model.Vote;
-import com.vexsoftware.votifier.net.PlatformVoteReceiver;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
-public class PlatformVoteReceiverTest {
+public class VoteReceiverBindingTest {
 
 	@Test
 	public void boundReceiverDeliversOneAuthenticatedVoteAndReleasesListener() throws Exception {
 		Key dummyTokenKey = KeyGenerator.getInstance("HmacSHA256").generateKey();
 		var accepted = new LinkedBlockingQueue<Vote>();
-		var settings = new PlatformVoteReceiver.Settings("127.0.0.1", 0, "test", false, true,
+		var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", false, true,
 				null, Map.of("example.test", dummyTokenKey), Set.of(), null, Map.of());
-		VoteReceiver bound = PlatformVoteReceiver.bind(settings, Logger.getAnonymousLogger(), accepted::add);
+		VoteReceiver bound = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), accepted::add);
 		int port = bound.getServer().getLocalPort();
 		try {
 			bound.start();
@@ -87,11 +86,11 @@ public class PlatformVoteReceiverTest {
 	public void boundReceiverSnapshotsForwardingAuthentication() throws Exception {
 		Key dummyTokenKey = KeyGenerator.getInstance("HmacSHA256").generateKey();
 		var target = new ForwardServer(true, "127.0.0.1", 1234, "", dummyTokenKey);
-		var settings = new PlatformVoteReceiver.Settings("127.0.0.1", 0, "test", true, true,
+		var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true,
 				null, Map.of(), Set.of(), null, Map.of("test", target));
 		target.setToken(null);
 		settings.forwarding().get("test").setToken(null);
-		VoteReceiver bound = PlatformVoteReceiver.bind(settings, Logger.getAnonymousLogger(), vote -> {});
+		VoteReceiver bound = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), vote -> {});
 		try {
 			bound.getServerData("test").setToken(null);
 			assertTrue(bound.getServerData("test").isUseTokens());
@@ -102,9 +101,9 @@ public class PlatformVoteReceiverTest {
 
 	@Test
 	public void repeatInitializationPreservesTheBoundSocket() throws Exception {
-		var settings = new PlatformVoteReceiver.Settings("127.0.0.1", 0, "test", true, true,
+		var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true,
 				null, Map.of(), Set.of(), null, Map.of());
-		var bound = PlatformVoteReceiver.bind(settings, Logger.getAnonymousLogger(), vote -> {});
+		var bound = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), vote -> {});
 		try {
 			ServerSocket original = bound.getServer();
 			assertThrows(IllegalStateException.class, bound::initialize);
@@ -118,9 +117,9 @@ public class PlatformVoteReceiverTest {
 
 	@Test
 	public void callbackRejectionDoesNotEscapeToTheReceiverForwardingPath() throws Exception {
-		var settings = new PlatformVoteReceiver.Settings("127.0.0.1", 0, "test", true, true,
+		var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true,
 				null, Map.of(), Set.of(), null, Map.of());
-		var bound = PlatformVoteReceiver.bind(settings, Logger.getAnonymousLogger(), vote -> {
+		var bound = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), vote -> {
 			throw new java.util.concurrent.RejectedExecutionException();
 		});
 		try {
