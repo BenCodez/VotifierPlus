@@ -2,6 +2,9 @@ package com.bencodez.votifierplus.tests;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -92,6 +95,36 @@ public class PlatformVoteReceiverTest {
 		try {
 			bound.getServerData("test").setToken(null);
 			assertTrue(bound.getServerData("test").isUseTokens());
+		} finally {
+			bound.shutdown();
+		}
+	}
+
+	@Test
+	public void repeatInitializationPreservesTheBoundSocket() throws Exception {
+		var settings = new PlatformVoteReceiver.Settings("127.0.0.1", 0, "test", true, true,
+				null, Map.of(), Set.of(), null, Map.of());
+		var bound = PlatformVoteReceiver.bind(settings, Logger.getAnonymousLogger(), vote -> {});
+		try {
+			ServerSocket original = bound.getServer();
+			assertThrows(IllegalStateException.class, bound::initialize);
+			assertSame(original, bound.getServer());
+			assertFalse(original.isClosed());
+		} finally {
+			bound.shutdown();
+		}
+		assertThrows(IllegalStateException.class, bound::initialize);
+	}
+
+	@Test
+	public void callbackRejectionDoesNotEscapeToTheReceiverForwardingPath() throws Exception {
+		var settings = new PlatformVoteReceiver.Settings("127.0.0.1", 0, "test", true, true,
+				null, Map.of(), Set.of(), null, Map.of());
+		var bound = PlatformVoteReceiver.bind(settings, Logger.getAnonymousLogger(), vote -> {
+			throw new java.util.concurrent.RejectedExecutionException();
+		});
+		try {
+			assertDoesNotThrow(() -> bound.callEvent(new Vote()));
 		} finally {
 			bound.shutdown();
 		}

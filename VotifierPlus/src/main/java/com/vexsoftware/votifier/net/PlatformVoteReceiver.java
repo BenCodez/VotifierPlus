@@ -26,7 +26,12 @@ public final class PlatformVoteReceiver extends VoteReceiver {
 	 * run concurrently for different votes. It should enqueue platform work on
 	 * the appropriate scheduler and return promptly. Treat the vote as read-only
 	 * because forwarding uses the same object. The adapter owns the lifecycle of
-	 * work it enqueues on its scheduler.
+	 * work it enqueues on its scheduler. The receiver can invoke the callback
+	 * for connections already admitted while shutdown drains the worker pool.
+	 * The adapter must gate and drain its scheduler work during disable.
+	 *
+	 * <p>The wire response acknowledges protocol acceptance before this
+	 * callback. Callback failures are logged and forwarding can still proceed.
 	 *
 	 * @param settings listener configuration and protocol policy
 	 * @param logger logger for the receiver
@@ -165,11 +170,18 @@ public final class PlatformVoteReceiver extends VoteReceiver {
 
 	@Override
 	public void callEvent(Vote vote) {
-		onVote.accept(vote);
+		try {
+			onVote.accept(vote);
+		} catch (RuntimeException failure) {
+			logger.warning("Vote callback failed: " + VoteLogSafety.exceptionType(failure));
+		}
 	}
 
 	@Override
 	public void initialize() throws Exception {
+		if (getServer() != null) {
+			throw new IllegalStateException("Bind a new receiver to replace this listener");
+		}
 		try {
 			super.initialize();
 		} catch (Exception failure) {
