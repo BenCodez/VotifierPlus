@@ -10,6 +10,7 @@ import java.net.Socket;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.lang.reflect.Method;
+import java.lang.reflect.Field;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.security.Key;
 import java.security.KeyPair;
@@ -149,6 +150,47 @@ public class VoteReceiverLifecycleTest {
 				assertEquals(-1, stalled.getInputStream().read());
 			}
 		}
+	}
+
+	@Test
+	public void concurrentShutdownWaitsForTheRetirementOwner() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		CountDownLatch closing = new CountDownLatch(1);
+		CountDownLatch canClose = new CountDownLatch(1);
+		CountDownLatch secondReturned = new CountDownLatch(1);
+		receiver.getServer().close();
+		Field server = VoteReceiver.class.getDeclaredField("server");
+		server.setAccessible(true);
+		server.set(receiver, new ServerSocket() {
+			@Override
+			public void close() throws IOException {
+				closing.countDown();
+				try {
+					canClose.await(3, TimeUnit.SECONDS);
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+				}
+				super.close();
+			}
+		});
+		Thread first = new Thread(receiver::shutdown);
+		Thread second = new Thread(() -> {
+			receiver.shutdown();
+			secondReturned.countDown();
+		});
+		first.start();
+		try {
+			assertTrue(closing.await(2, TimeUnit.SECONDS));
+			second.start();
+			assertFalse(secondReturned.await(200, TimeUnit.MILLISECONDS));
+		} finally {
+			canClose.countDown();
+			first.join(5000);
+			second.join(5000);
+		}
+		assertFalse(first.isAlive());
+		assertFalse(second.isAlive());
+		assertTrue(receiver.getServer().isClosed());
 	}
 
 	private void waitForAccept() throws InterruptedException {

@@ -79,6 +79,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -107,6 +108,9 @@ public abstract class VoteReceiver extends Thread {
 	private volatile boolean running = true;
 	private final Object lifecycleLock = new Object();
 	private final Set<Socket> connections = new HashSet<>();
+	private final CountDownLatch retirementComplete = new CountDownLatch(1);
+	private Thread retirementOwner;
+	private static final int DRAIN_SECONDS = 3;
 
 	@Getter
 	private volatile VoteThrottleService throttleService;
@@ -208,9 +212,32 @@ public abstract class VoteReceiver extends Thread {
 	 * bounded drain windows. Platform-owned callbacks must return promptly.
 	 */
 	public void shutdown() {
+		boolean ownsRetirement;
+		synchronized (lifecycleLock) {
+			if (retirementOwner == Thread.currentThread()) {
+				return;
+			}
+			ownsRetirement = retirementOwner == null;
+			if (ownsRetirement) {
+				retirementOwner = Thread.currentThread();
+				running = false;
+			}
+		}
+		if (!ownsRetirement) {
+			awaitRetirement();
+			return;
+		}
+
+		try {
+			retire();
+		} finally {
+			retirementComplete.countDown();
+		}
+	}
+
+	private void retire() {
 		List<Socket> sockets;
 		synchronized (lifecycleLock) {
-			running = false;
 			sockets = List.copyOf(connections);
 			connections.clear();
 		}
@@ -229,6 +256,16 @@ public abstract class VoteReceiver extends Thread {
 		}
 	}
 
+	private void awaitRetirement() {
+		try {
+			if (!retirementComplete.await(4L * DRAIN_SECONDS, TimeUnit.SECONDS)) {
+				logWarning("Timed out waiting for receiver retirement.");
+			}
+		} catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
 	boolean isStopping() {
 		return !running;
 	}
@@ -242,7 +279,7 @@ public abstract class VoteReceiver extends Thread {
 		boolean interrupted = false;
 		try {
 			try {
-				if (executor.awaitTermination(3, TimeUnit.SECONDS)) {
+				if (executor.awaitTermination(DRAIN_SECONDS, TimeUnit.SECONDS)) {
 					return;
 				}
 			} catch (InterruptedException ex) {
@@ -255,7 +292,7 @@ public abstract class VoteReceiver extends Thread {
 						+ ", closed active sockets=" + closedSockets);
 			}
 			try {
-				if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
+				if (!executor.awaitTermination(DRAIN_SECONDS, TimeUnit.SECONDS)) {
 					logWarning("Unable to fully shut down " + name + " executor.");
 				}
 			} catch (InterruptedException ex) {
