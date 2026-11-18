@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -145,7 +146,7 @@ public class VoteReceiverLifecycleTest {
 				retire.join(5000);
 				assertFalse(retire.isAlive());
 				assertTrue(receiver.getWarnings().stream().anyMatch(warning ->
-						warning.contains("discarded queued jobs=1, closed active sockets=1")));
+						warning.contains("discarded queued jobs=1, active socket close attempts=1")));
 				stalled.setSoTimeout(2000);
 				assertEquals(-1, stalled.getInputStream().read());
 			}
@@ -158,12 +159,14 @@ public class VoteReceiverLifecycleTest {
 		CountDownLatch closing = new CountDownLatch(1);
 		CountDownLatch canClose = new CountDownLatch(1);
 		CountDownLatch secondReturned = new CountDownLatch(1);
+		AtomicInteger listenerCloseCalls = new AtomicInteger();
 		receiver.getServer().close();
 		Field server = VoteReceiver.class.getDeclaredField("server");
 		server.setAccessible(true);
 		server.set(receiver, new ServerSocket() {
 			@Override
 			public void close() throws IOException {
+				listenerCloseCalls.incrementAndGet();
 				closing.countDown();
 				try {
 					canClose.await(3, TimeUnit.SECONDS);
@@ -190,6 +193,7 @@ public class VoteReceiverLifecycleTest {
 		}
 		assertFalse(first.isAlive());
 		assertFalse(second.isAlive());
+		assertEquals(1, listenerCloseCalls.get());
 		assertTrue(receiver.getServer().isClosed());
 	}
 

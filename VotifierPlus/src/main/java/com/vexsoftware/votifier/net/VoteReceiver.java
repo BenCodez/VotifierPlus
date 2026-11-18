@@ -286,10 +286,10 @@ public abstract class VoteReceiver extends Thread {
 				interrupted = true;
 			}
 			int discarded = executor.shutdownNow().size();
-			int closedSockets = cancelActive == null ? 0 : cancelActive.getAsInt();
-			if (cancelActive != null && (discarded != 0 || closedSockets != 0)) {
+			int socketCloseAttempts = cancelActive == null ? 0 : cancelActive.getAsInt();
+			if (cancelActive != null && (discarded != 0 || socketCloseAttempts != 0)) {
 				logWarning("Forced forwarding shutdown: discarded queued jobs=" + discarded
-						+ ", closed active sockets=" + closedSockets);
+						+ ", active socket close attempts=" + socketCloseAttempts);
 			}
 			try {
 				if (!executor.awaitTermination(DRAIN_SECONDS, TimeUnit.SECONDS)) {
