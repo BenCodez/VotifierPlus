@@ -38,6 +38,7 @@ public class VoteForwarder {
 	private static final int HANDSHAKE_TIMEOUT_MILLIS = 3000;
 
 	private final VoteReceiver receiver;
+	private final VoteThrottleService failureLogs = new VoteThrottleService(null);
 	private final Set<Socket> activeSockets = new HashSet<>();
 	private volatile boolean stopped;
 
@@ -112,8 +113,12 @@ public class VoteForwarder {
 				receiver.debug("Payload forwarded to " + VoteLogSafety.field(name) + " (" + payload.length + " bytes)");
 			} catch (Exception ex) {
 				if (!stopped) {
-					receiver.log("Failed to forward vote to " + VoteLogSafety.field(name) + ": "
-							+ VoteLogSafety.exceptionType(ex));
+					String warning = failureLogs.allowLog("forward|" + name,
+							"Failed to forward vote to " + VoteLogSafety.field(name) + ": "
+									+ VoteLogSafety.exceptionType(ex));
+					if (warning != null) {
+						receiver.log(warning);
+					}
 				}
 			} finally {
 				synchronized (activeSockets) {

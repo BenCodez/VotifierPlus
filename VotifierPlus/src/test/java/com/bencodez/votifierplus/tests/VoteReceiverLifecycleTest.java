@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.net.Socket;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.FutureTask;
 import java.lang.reflect.Field;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.security.Key;
@@ -31,6 +33,7 @@ import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.net.ThrottleConfig;
 import com.vexsoftware.votifier.net.VoteReceiver;
+import com.vexsoftware.votifier.net.VoteForwarder;
 
 /** Regression tests for receiver thread lifecycle logging. */
 public class VoteReceiverLifecycleTest {
@@ -202,6 +205,84 @@ public class VoteReceiverLifecycleTest {
 		assertTrue(receiver.getServer().isClosed());
 	}
 
+	@Test
+	public void listenerExitCannotConfirmRetirementOfANonCooperativeWorker() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		receiver.signingKey = KeyGenerator.getInstance("HmacSHA256").generateKey();
+		var callbackThread = new LinkedBlockingQueue<Thread>();
+		var release = new CountDownLatch(1);
+		receiver.onVote = () -> {
+			callbackThread.add(Thread.currentThread());
+			boolean interrupted = false;
+			try {
+				while (release.getCount() != 0) {
+					try {
+						if (!release.await(10, TimeUnit.SECONDS)) {
+							return;
+						}
+					} catch (InterruptedException ex) {
+						interrupted = true;
+					}
+				}
+			} finally {
+				if (interrupted) {
+					Thread.currentThread().interrupt();
+				}
+			}
+		};
+		receiver.start();
+		Thread shutdown = new Thread(() -> {
+			Thread.currentThread().interrupt();
+			receiver.shutdown();
+		});
+		Thread worker = null;
+		try {
+			VoteReceiverBindingTest.assertVoteAccepted(receiver.getServer().getLocalPort(), receiver.signingKey);
+			worker = callbackThread.poll(2, TimeUnit.SECONDS);
+			assertNotNull(worker);
+			shutdown.start();
+			shutdown.join(6000);
+			receiver.join(2000);
+			assertFalse(shutdown.isAlive());
+			assertFalse(receiver.isAlive());
+			assertTrue(worker.isAlive(), "Listener exit does not terminate a callback that ignores interruption");
+			assertTrue(receiver.getWarnings().contains("Unable to fully shut down connection executor."));
+		} finally {
+			release.countDown();
+			if (worker != null) {
+				worker.join(2000);
+				assertFalse(worker.isAlive(), "Cooperating after release lets the same worker retire");
+			}
+		}
+	}
+
+	@Test
+	public void repeatedFailuresAgainstOneTargetShareOneDiagnostic() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		try (ServerSocket backend = new ServerSocket(0, 2, InetAddress.getLoopbackAddress())) {
+			backend.setSoTimeout(3000);
+			receiver.servers = Set.of("test");
+			receiver.target = new ForwardServer(true, backend.getInetAddress().getHostAddress(),
+					backend.getLocalPort(), "", null);
+			var replies = new FutureTask<Void>(() -> {
+				for (int i = 0; i < 2; i++) {
+					try (Socket peer = backend.accept()) {
+						peer.getOutputStream().write(("A".repeat(600) + "\n").getBytes(StandardCharsets.UTF_8));
+					}
+				}
+				return null;
+			});
+			Thread.ofVirtual().start(replies);
+			var forwarder = new VoteForwarder(receiver);
+			var vote = new Vote("example.test", "TestVoter", "", "TestTimestamp");
+			forwarder.forwardVote(vote);
+			forwarder.forwardVote(vote);
+			replies.get(5, TimeUnit.SECONDS);
+			assertEquals(1L, receiver.info.stream().filter(message -> message.contains("Failed to forward vote")).count());
+			assertFalse(receiver.info.getFirst().contains("A".repeat(100)));
+		}
+	}
+
 	private void waitForAccept() throws InterruptedException {
 		assertTrue(receiver.awaitingAccept(2, TimeUnit.SECONDS), "Receiver did not reach accept()");
 	}
@@ -209,6 +290,7 @@ public class VoteReceiverLifecycleTest {
 	private static final class CapturingVoteReceiver extends VoteReceiver {
 
 		private final List<String> warnings = new CopyOnWriteArrayList<>();
+		private final List<String> info = new CopyOnWriteArrayList<>();
 		private final CountDownLatch accepting = new CountDownLatch(1);
 		private final CountDownLatch processing = new CountDownLatch(1);
 		private final CountDownLatch thirdAccept = new CountDownLatch(3);
@@ -219,6 +301,7 @@ public class VoteReceiverLifecycleTest {
 		private Set<String> servers = Set.of();
 		private ForwardServer target;
 		private Key signingKey;
+		private Runnable onVote = () -> {};
 		private final LinkedBlockingQueue<Vote> votes = new LinkedBlockingQueue<>();
 		private final CountDownLatch forwardingRejected = new CountDownLatch(1);
 
@@ -284,6 +367,7 @@ public class VoteReceiverLifecycleTest {
 
 		@Override
 		public void log(String message) {
+			info.add(message);
 		}
 
 		@Override
@@ -332,6 +416,7 @@ public class VoteReceiverLifecycleTest {
 		@Override
 		public void callEvent(Vote vote) {
 			votes.add(vote);
+			onVote.run();
 		}
 	}
 }
