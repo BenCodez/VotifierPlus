@@ -7,6 +7,14 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.net.SocketAddress;
+import java.util.function.Supplier;
+import java.util.function.BooleanSupplier;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.net.Socket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -418,7 +426,120 @@ public class VoteReceiverLifecycleTest {
 				}
 				receiver.shutdown();
 			}
-			assertTrue(receiver.isRetired());
+			waitUntil(receiver::isRetired);
+		}
+	}
+
+	private static void waitUntil(BooleanSupplier condition) throws InterruptedException {
+		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+		while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+			Thread.sleep(1);
+		}
+		assertTrue(condition.getAsBoolean());
+	}
+
+	@Test
+	public void queuedVoteWaitsForRuntimeCloseDuringGracefulDrainAndCancelsDuringForcedDrain() throws Exception {
+		for (boolean forced : new boolean[] {false, true}) {
+			receiver = new CapturingVoteReceiver();
+			receiver.signingKey = KeyGenerator.getInstance("HmacSHA256").generateKey();
+			receiver.servers = Set.of("test");
+			receiver.target = new ForwardServer(true, "127.0.0.1", 1234, "", receiver.signingKey);
+			receiver.start();
+			waitForAccept();
+			var closeEntered = new CountDownLatch(1);
+			var release = new CountDownLatch(1);
+			var writes = new AtomicInteger();
+			var sockets = new AtomicInteger();
+			var firstWorker = new LinkedBlockingQueue<Thread>();
+			Supplier<Socket> factory = () -> {
+				boolean first = sockets.getAndIncrement() == 0;
+				return new Socket() {
+					@Override
+					public void connect(SocketAddress address, int timeout) {
+						if (first) {
+							firstWorker.add(Thread.currentThread());
+						}
+					}
+
+					@Override
+					public InputStream getInputStream() {
+						return new ByteArrayInputStream("VOTIFIER 2 challenge\n".getBytes(StandardCharsets.UTF_8));
+					}
+
+					@Override
+					public OutputStream getOutputStream() {
+						return new ByteArrayOutputStream() {
+							@Override
+							public void write(byte[] data) throws IOException {
+								writes.incrementAndGet();
+								super.write(data);
+							}
+						};
+					}
+
+					@Override
+					public void close() throws IOException {
+						if (first) {
+							closeEntered.countDown();
+							try {
+								release.await(8, TimeUnit.SECONDS);
+							} catch (InterruptedException ex) {
+								Thread.currentThread().interrupt();
+							}
+						}
+						super.close();
+					}
+				};
+			};
+			var constructor = VoteForwarder.class.getDeclaredConstructor(VoteReceiver.class, int.class,
+					BiFunction.class, Supplier.class);
+			constructor.setAccessible(true);
+			var forwarderField = VoteReceiver.class.getDeclaredField("voteForwarder");
+			forwarderField.setAccessible(true);
+			var stopForwarder = VoteForwarder.class.getDeclaredMethod("stop");
+			stopForwarder.setAccessible(true);
+			stopForwarder.invoke(receiver.getVoteForwarder());
+			BiFunction<String, Integer, InetSocketAddress> resolve = InetSocketAddress::new;
+			forwarderField.set(receiver, constructor.newInstance(receiver, 1, resolve, factory));
+			var executorField = VoteReceiver.class.getDeclaredField("forwardExecutor");
+			executorField.setAccessible(true);
+			var executor = (ThreadPoolExecutor) executorField.get(receiver);
+			int port = receiver.getServer().getLocalPort();
+			var shutdown = new Thread(() -> {
+				if (forced) {
+					Thread.currentThread().interrupt();
+				}
+				receiver.shutdown();
+			});
+			try {
+				VoteReceiverBindingTest.assertVoteAccepted(port, receiver.signingKey);
+				assertTrue(closeEntered.await(2, TimeUnit.SECONDS));
+				VoteReceiverBindingTest.assertVoteAccepted(port, receiver.signingKey);
+				waitUntil(() -> executor.getQueue().size() == 1);
+				Thread worker = firstWorker.poll(2, TimeUnit.SECONDS);
+				assertNotNull(worker);
+				worker.interrupt();
+				waitUntil(() -> executor.getQueue().isEmpty() && worker.getState() == Thread.State.TIMED_WAITING);
+				assertEquals(1, sockets.get());
+				shutdown.start();
+				waitUntil(executor::isShutdown);
+				if (!forced) {
+					release.countDown();
+				}
+				shutdown.join(5000);
+				assertFalse(shutdown.isAlive());
+				assertEquals(forced ? 1 : 2, writes.get());
+				if (forced) {
+					assertFalse(receiver.isRetired());
+				}
+			} finally {
+				release.countDown();
+				shutdown.join(5000);
+				receiver.shutdown();
+				receiver.join(2000);
+			}
+			waitUntil(receiver::isRetired);
 		}
 	}
 

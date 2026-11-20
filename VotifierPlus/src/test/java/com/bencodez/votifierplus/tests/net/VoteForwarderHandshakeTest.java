@@ -253,6 +253,15 @@ public class VoteForwarderHandshakeTest {
 
 	@Test
 	public void separateJvmUsesSocksWithoutConnectingToTheTargetDirectly() throws Exception {
+		checkSocks(false);
+	}
+
+	@Test
+	public void delayedResolutionAndStalledSocksGreetingShareOneBudget() throws Exception {
+		checkSocks(true);
+	}
+
+	private static void checkSocks(boolean stallGreeting) throws Exception {
 		InetAddress loopback = InetAddress.getByName("127.0.0.1");
 		try (ServerSocket proxy = new ServerSocket(0, 1, loopback);
 				ServerSocket directSentinel = new ServerSocket(0, 1, loopback)) {
@@ -262,7 +271,7 @@ public class VoteForwarderHandshakeTest {
 			String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
 			Process child = new ProcessBuilder(java, "-DsocksProxyHost=127.0.0.1",
 					"-DsocksProxyPort=" + proxy.getLocalPort(), "-DsocksNonProxyHosts=", "-cp", classpath,
-					SocksClient.class.getName(), Integer.toString(directSentinel.getLocalPort()))
+					SocksClient.class.getName(), Integer.toString(directSentinel.getLocalPort()), Boolean.toString(stallGreeting))
 					.redirectErrorStream(true).start();
 			try (Socket peer = proxy.accept()) {
 				peer.setSoTimeout(3000);
@@ -279,10 +288,16 @@ public class VoteForwarderHandshakeTest {
 				assertEquals("127.0.0.1", InetAddress.getByAddress(in.readNBytes(4)).getHostAddress());
 				assertEquals(directSentinel.getLocalPort(), in.readUnsignedShort());
 				out.write(new byte[] {5, 0, 0, 1, 127, 0, 0, 1, 0, 0});
-				out.write("VOTIFIER 2 challenge\r\n".getBytes(StandardCharsets.UTF_8));
-				String received = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-				assertTrue(received.contains("TestVoter"));
-				assertTrue(received.endsWith("\r\n"));
+				if (stallGreeting) {
+					peer.setSoTimeout(2600);
+					out.write("VOTIFIER 2 ".getBytes(StandardCharsets.UTF_8));
+					assertEquals(-1, in.read(), "The resolver delay must consume the greeting budget");
+				} else {
+					out.write("VOTIFIER 2 challenge\r\n".getBytes(StandardCharsets.UTF_8));
+					String received = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+					assertTrue(received.contains("TestVoter"));
+					assertTrue(received.endsWith("\r\n"));
+				}
 				assertThrows(SocketTimeoutException.class, directSentinel::accept);
 				assertTrue(child.waitFor(5, TimeUnit.SECONDS));
 				assertEquals(0, child.exitValue(), () -> {
@@ -476,6 +491,97 @@ public class VoteForwarderHandshakeTest {
 		assertTrue((boolean) call(terminated, forwarder));
 	}
 
+	@Test
+	public void failedCloseFencesRetirementAndKeepsOneCloseOwner() throws Throwable {
+		var closeCalled = new CountDownLatch(1);
+		var closeCalls = new AtomicInteger();
+		var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true, null,
+				Map.of(), Set.of(), null, Map.of());
+		var receiver = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), ignored -> {});
+		var forwarder = forwarderWithSockets(receiver, () -> new Socket() {
+			@Override
+			public void close() throws IOException {
+				closeCalls.incrementAndGet();
+				closeCalled.countDown();
+				throw new IOException("synthetic close failure");
+			}
+		});
+		Method register = VoteForwarder.class.getDeclaredMethod("registerAttempt", boolean.class, String.class, long.class);
+		register.setAccessible(true);
+		Method terminated = VoteForwarder.class.getDeclaredMethod("isTerminated");
+		terminated.setAccessible(true);
+		try {
+			Object attempt = call(register, forwarder, true, "test", System.nanoTime() + TimeUnit.SECONDS.toNanos(4));
+			Method expire = VoteForwarder.class.getDeclaredMethod("expire", attempt.getClass());
+			expire.setAccessible(true);
+			var release = new CountDownLatch(1);
+			var expiry = new FutureTask<Void>(() -> {
+				release.await(2, TimeUnit.SECONDS);
+				expire.invoke(forwarder, attempt);
+				return null;
+			});
+			Thread.ofVirtual().start(expiry);
+			release.countDown();
+			stopForTest(forwarder);
+			expiry.get(2, TimeUnit.SECONDS);
+			assertTrue(closeCalled.await(2, TimeUnit.SECONDS));
+			assertEquals(1, closeCalls.get());
+			assertFalse((boolean) call(terminated, forwarder));
+		} finally {
+			stopForTest(forwarder);
+			receiver.shutdown();
+		}
+	}
+
+	@Test
+	public void shutdownCannotOvertakeAReservedSocketBeforeRegistration() throws Exception {
+		var allocating = new CountDownLatch(1);
+		var release = new CountDownLatch(1);
+		var closed = new CountDownLatch(1);
+		var closes = new AtomicInteger();
+		var forwarder = forwarderWithSockets(null, () -> {
+			allocating.countDown();
+			try {
+				release.await(3, TimeUnit.SECONDS);
+			} catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+			}
+			return new Socket() {
+				@Override
+				public void close() throws IOException {
+					closes.incrementAndGet();
+					super.close();
+					closed.countDown();
+				}
+			};
+		});
+		Method register = VoteForwarder.class.getDeclaredMethod("registerAttempt", boolean.class, String.class, long.class);
+		register.setAccessible(true);
+		var registration = new FutureTask<>(() -> register.invoke(forwarder, false, "runtime",
+				System.nanoTime() + TimeUnit.SECONDS.toNanos(4)));
+		var stopAttempted = new CountDownLatch(1);
+		var stopping = new FutureTask<Void>(() -> {
+			stopAttempted.countDown();
+			stopForTest(forwarder);
+			return null;
+		});
+		Thread.ofVirtual().start(registration);
+		try {
+			assertTrue(allocating.await(2, TimeUnit.SECONDS));
+			Thread.ofVirtual().start(stopping);
+			assertTrue(stopAttempted.await(2, TimeUnit.SECONDS));
+			assertThrows(TimeoutException.class, () -> stopping.get(100, TimeUnit.MILLISECONDS));
+			release.countDown();
+			registration.get(2, TimeUnit.SECONDS);
+			stopping.get(2, TimeUnit.SECONDS);
+			assertTrue(closed.await(2, TimeUnit.SECONDS));
+			assertEquals(1, closes.get());
+		} finally {
+			release.countDown();
+			stopForTest(forwarder);
+		}
+	}
+
 	private static VoteForwarder forwarderWithSockets(VoteReceiver receiver, Supplier<Socket> sockets) throws Exception {
 		var constructor = VoteForwarder.class.getDeclaredConstructor(VoteReceiver.class, int.class,
 				BiFunction.class, Supplier.class);
@@ -497,9 +603,26 @@ public class VoteForwarderHandshakeTest {
 			var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true, null,
 					Map.of(), Set.of(), null, Map.of("test", target));
 			var receiver = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), accepted -> {});
+			VoteForwarder forwarder;
+			if (Boolean.parseBoolean(arguments[1])) {
+				var constructor = VoteForwarder.class.getDeclaredConstructor(VoteReceiver.class, int.class, BiFunction.class);
+				constructor.setAccessible(true);
+				BiFunction<String, Integer, InetSocketAddress> delayed = (host, port) -> {
+					try {
+						Thread.sleep(3700);
+					} catch (InterruptedException ex) {
+						Thread.currentThread().interrupt();
+					}
+					return new InetSocketAddress(host, port);
+				};
+				forwarder = constructor.newInstance(receiver, 1, delayed);
+			} else {
+				forwarder = new VoteForwarder(receiver);
+			}
 			try {
-				new VoteForwarder(receiver).forwardVote(new Vote("example.test", "TestVoter", "", "TestTimestamp"));
+				forwarder.forwardVote(new Vote("example.test", "TestVoter", "", "TestTimestamp"));
 			} finally {
+				stopForTest(forwarder);
 				receiver.shutdown();
 			}
 		}

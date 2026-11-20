@@ -80,6 +80,11 @@ public class VoteForwarder {
 	private final BiFunction<String, Integer, InetSocketAddress> resolveAddress;
 	private volatile boolean stopped;
 
+	/**
+	 * Creates an independent forwarder using the supplied receiver's configuration.
+	 * To share the listener's lifecycle, use its receiver-owned forwarder obtained
+	 * from {@link VoteReceiver#getVoteForwarder()} after startup.
+	 */
 	public VoteForwarder(VoteReceiver receiver) {
 		this(receiver, receiver.getForwardWorkerCount());
 	}
