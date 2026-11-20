@@ -6,9 +6,17 @@ import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.BufferedReader;
 import java.io.StringReader;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 
@@ -48,5 +56,55 @@ public class VoteForwarderHandshakeTest {
 	public void oversizedHandshakeIsStillRejected() {
 		BufferedReader input = new BufferedReader(new StringReader("X".repeat(513) + "\r\n"));
 		assertThrows(IllegalStateException.class, () -> readHandshakeLine(input));
+	}
+
+	@Test
+	public void quietPeerAndCrLookaheadUseTheTotalDeadline() throws Exception {
+		for (String greeting : new String[] {"", "VOTIFIER 2 challenge\r"}) {
+			try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+					Socket client = new Socket(server.getInetAddress(), server.getLocalPort());
+					Socket peer = server.accept()) {
+				peer.getOutputStream().write(greeting.getBytes(StandardCharsets.UTF_8));
+				assertThrows(SocketTimeoutException.class, () -> readSocketHandshake(client, 250));
+			}
+		}
+	}
+
+	@Test
+	public void trickleTrafficCannotRenewTheHandshakeBudget() throws Exception {
+		try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+				Socket client = new Socket(server.getInetAddress(), server.getLocalPort());
+				Socket peer = server.accept()) {
+			Thread sender = Thread.ofVirtual().start(() -> {
+				try {
+					for (int i = 0; i < 100; i++) {
+						peer.getOutputStream().write('a');
+						Thread.sleep(30);
+					}
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+				} catch (IOException ignored) {
+					// The peer may close when the read budget expires.
+				}
+			});
+			try {
+				long start = System.nanoTime();
+				assertThrows(SocketTimeoutException.class, () -> readSocketHandshake(client, 300));
+				assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(2));
+			} finally {
+				sender.interrupt();
+				sender.join(2000);
+			}
+		}
+	}
+
+	private static void readSocketHandshake(Socket socket, int timeoutMillis) throws Throwable {
+		Method parser = VoteForwarder.class.getDeclaredMethod("readHandshakeLine", Socket.class, int.class);
+		parser.setAccessible(true);
+		try {
+			parser.invoke(null, socket, timeoutMillis);
+		} catch (InvocationTargetException failure) {
+			throw failure.getCause();
+		}
 	}
 }

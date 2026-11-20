@@ -1,10 +1,16 @@
 package com.bencodez.votifierplus.tests;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.lang.reflect.Field;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.security.Key;
 import java.security.KeyPair;
 import java.util.Collections;
@@ -14,6 +20,9 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.crypto.KeyGenerator;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -65,6 +74,134 @@ public class VoteReceiverLifecycleTest {
 		assertTrue(receiver.getWarnings().size() == 1, () -> "Expected one accept warning, got: " + receiver.getWarnings());
 	}
 
+	@Test
+	public void forcedShutdownClosesActiveAndQueuedSockets() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		receiver.pauseProcessing = true;
+		receiver.start();
+		int port = receiver.getServer().getLocalPort();
+		try (Socket active = new Socket("127.0.0.1", port);
+				Socket queued = new Socket("127.0.0.1", port)) {
+			assertTrue(receiver.processing.await(2, TimeUnit.SECONDS));
+			Socket first = receiver.accepted.poll(2, TimeUnit.SECONDS);
+			Socket second = receiver.accepted.poll(2, TimeUnit.SECONDS);
+			assertNotNull(first);
+			assertNotNull(second);
+			assertTrue(receiver.thirdAccept.await(2, TimeUnit.SECONDS), "second socket was not submitted");
+			var retiring = new Thread(() -> {
+				Thread.currentThread().interrupt();
+				receiver.shutdown();
+			});
+			retiring.start();
+			retiring.join(5000);
+			assertFalse(retiring.isAlive());
+			assertTrue(first.isClosed());
+			assertTrue(second.isClosed());
+			assertTrue(retiring.isInterrupted());
+		}
+	}
+
+	@Test
+	public void socketAcceptedDuringRetirementIsClosed() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		receiver.pauseAccept = true;
+		receiver.start();
+		try (Socket client = new Socket("127.0.0.1", receiver.getServer().getLocalPort())) {
+			Socket accepted = receiver.accepted.poll(2, TimeUnit.SECONDS);
+			assertNotNull(accepted);
+			try {
+				receiver.shutdown();
+			} finally {
+				receiver.resumeAccept.countDown();
+			}
+			receiver.join(3000);
+			assertFalse(receiver.isAlive());
+			assertTrue(accepted.isClosed());
+			assertEquals(1L, receiver.processing.getCount());
+		}
+	}
+
+	@Test
+	public void fullForwardingQueueStillAcknowledgesAndDeliversVotesLocally() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		try (ServerSocket backend = new ServerSocket(0, 3, InetAddress.getLoopbackAddress())) {
+			backend.setSoTimeout(2000);
+			receiver.servers = Set.of("test");
+			receiver.target = new ForwardServer(true, backend.getInetAddress().getHostAddress(),
+					backend.getLocalPort(), "", null);
+			receiver.signingKey = KeyGenerator.getInstance("HmacSHA256").generateKey();
+			receiver.start();
+			int port = receiver.getServer().getLocalPort();
+			VoteReceiverBindingTest.assertVoteAccepted(port, receiver.signingKey);
+			try (Socket stalled = backend.accept()) {
+				for (int i = 0; i < 3; i++) {
+					VoteReceiverBindingTest.assertVoteAccepted(port, receiver.signingKey);
+				}
+				for (int i = 0; i < 4; i++) {
+					assertNotNull(receiver.votes.poll(2, TimeUnit.SECONDS));
+				}
+				assertTrue(receiver.forwardingRejected.await(2, TimeUnit.SECONDS));
+				var retire = new Thread(() -> {
+					Thread.currentThread().interrupt();
+					receiver.shutdown();
+				});
+				retire.start();
+				retire.join(5000);
+				assertFalse(retire.isAlive());
+				assertTrue(receiver.getWarnings().stream().anyMatch(warning ->
+						warning.contains("discarded queued jobs=1, active socket close attempts=1")));
+				assertTrue(receiver.getWarnings().contains("Forwarding queue rejections at receiver retirement: 2"));
+				assertEquals(1L, receiver.getWarnings().stream().filter(warning -> warning.contains("Unable to queue")).count());
+				stalled.setSoTimeout(2000);
+				assertEquals(-1, stalled.getInputStream().read());
+			}
+		}
+	}
+
+	@Test
+	public void concurrentShutdownWaitsForTheRetirementOwner() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		CountDownLatch closing = new CountDownLatch(1);
+		CountDownLatch canClose = new CountDownLatch(1);
+		CountDownLatch secondReturned = new CountDownLatch(1);
+		AtomicInteger listenerCloseCalls = new AtomicInteger();
+		receiver.getServer().close();
+		Field server = VoteReceiver.class.getDeclaredField("server");
+		server.setAccessible(true);
+		server.set(receiver, new ServerSocket() {
+			@Override
+			public void close() throws IOException {
+				listenerCloseCalls.incrementAndGet();
+				closing.countDown();
+				try {
+					canClose.await(3, TimeUnit.SECONDS);
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+				}
+				super.close();
+			}
+		});
+		Thread first = new Thread(receiver::shutdown);
+		Thread second = new Thread(() -> {
+			receiver.shutdown();
+			secondReturned.countDown();
+		});
+		first.start();
+		try {
+			assertTrue(closing.await(2, TimeUnit.SECONDS));
+			second.start();
+			assertFalse(secondReturned.await(200, TimeUnit.MILLISECONDS));
+		} finally {
+			canClose.countDown();
+			first.join(5000);
+			second.join(5000);
+		}
+		assertFalse(first.isAlive());
+		assertFalse(second.isAlive());
+		assertEquals(1, listenerCloseCalls.get());
+		assertTrue(receiver.getServer().isClosed());
+	}
+
 	private void waitForAccept() throws InterruptedException {
 		assertTrue(receiver.awaitingAccept(2, TimeUnit.SECONDS), "Receiver did not reach accept()");
 	}
@@ -73,6 +210,17 @@ public class VoteReceiverLifecycleTest {
 
 		private final List<String> warnings = new CopyOnWriteArrayList<>();
 		private final CountDownLatch accepting = new CountDownLatch(1);
+		private final CountDownLatch processing = new CountDownLatch(1);
+		private final CountDownLatch thirdAccept = new CountDownLatch(3);
+		private final CountDownLatch resumeAccept = new CountDownLatch(1);
+		private final LinkedBlockingQueue<Socket> accepted = new LinkedBlockingQueue<>();
+		private boolean pauseAccept;
+		private boolean pauseProcessing;
+		private Set<String> servers = Set.of();
+		private ForwardServer target;
+		private Key signingKey;
+		private final LinkedBlockingQueue<Vote> votes = new LinkedBlockingQueue<>();
+		private final CountDownLatch forwardingRejected = new CountDownLatch(1);
 
 		private CapturingVoteReceiver() throws Exception {
 			super("127.0.0.1", 0);
@@ -89,12 +237,32 @@ public class VoteReceiverLifecycleTest {
 		@Override
 		protected Socket acceptSocket() throws IOException {
 			accepting.countDown();
-			return super.acceptSocket();
+			thirdAccept.countDown();
+			Socket socket = super.acceptSocket();
+			accepted.add(socket);
+			if (pauseAccept) {
+				try {
+					resumeAccept.await(3, TimeUnit.SECONDS);
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+				}
+			}
+			return socket;
+		}
+
+		@Override
+		public int getConnectionWorkerCount() {
+			return 1;
+		}
+
+		@Override
+		public int getForwardQueueCapacity() {
+			return 1;
 		}
 
 		@Override
 		public boolean isUseTokens() {
-			return false;
+			return signingKey != null;
 		}
 
 		@Override
@@ -105,6 +273,9 @@ public class VoteReceiverLifecycleTest {
 		@Override
 		public void logWarning(String warning) {
 			warnings.add(warning);
+			if (warning.contains("Unable to queue")) {
+				forwardingRejected.countDown();
+			}
 		}
 
 		@Override
@@ -117,6 +288,16 @@ public class VoteReceiverLifecycleTest {
 
 		@Override
 		public void debug(String message) {
+			if (message.startsWith("Accepted connection")) {
+				processing.countDown();
+				if (pauseProcessing) {
+					try {
+						new CountDownLatch(1).await(4, TimeUnit.SECONDS);
+					} catch (InterruptedException ex) {
+						Thread.currentThread().interrupt();
+					}
+				}
+			}
 		}
 
 		@Override
@@ -130,7 +311,7 @@ public class VoteReceiverLifecycleTest {
 
 		@Override
 		public Set<String> getServers() {
-			return Collections.emptySet();
+			return servers;
 		}
 
 		@Override
@@ -140,16 +321,17 @@ public class VoteReceiverLifecycleTest {
 
 		@Override
 		public Map<String, Key> getTokens() {
-			return Collections.emptyMap();
+			return signingKey == null ? Collections.emptyMap() : Map.of("example.test", signingKey);
 		}
 
 		@Override
 		public ForwardServer getServerData(String server) {
-			return null;
+			return target;
 		}
 
 		@Override
 		public void callEvent(Vote vote) {
+			votes.add(vote);
 		}
 	}
 }
