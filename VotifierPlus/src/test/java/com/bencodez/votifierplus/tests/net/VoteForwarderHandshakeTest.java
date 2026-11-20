@@ -5,25 +5,35 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.FilterOutputStream;
+import java.io.OutputStream;
+import java.nio.file.Path;
 import java.io.StringReader;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.nio.channels.Selector;
-import java.nio.channels.SocketChannel;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketAddress;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.SocketTimeoutException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.function.BiFunction;
+import java.util.function.Supplier;
+import java.util.concurrent.atomic.AtomicInteger;
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.net.VoteReceiver;
 import java.nio.charset.StandardCharsets;
@@ -84,7 +94,7 @@ public class VoteForwarderHandshakeTest {
 	public void quietPeerAndCrLookaheadUseTheTotalDeadline() throws Exception {
 		for (String greeting : new String[] {"", "VOTIFIER 2 challenge\r"}) {
 			try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
-					SocketChannel client = SocketChannel.open(new InetSocketAddress(server.getInetAddress(), server.getLocalPort()));
+					Socket client = new Socket(server.getInetAddress(), server.getLocalPort());
 					Socket peer = server.accept()) {
 				peer.getOutputStream().write(greeting.getBytes(StandardCharsets.UTF_8));
 				assertThrows(SocketTimeoutException.class, () -> readSocketHandshake(client, 250));
@@ -95,7 +105,7 @@ public class VoteForwarderHandshakeTest {
 	@Test
 	public void trickleTrafficCannotRenewTheHandshakeBudget() throws Exception {
 		try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
-				SocketChannel client = SocketChannel.open(new InetSocketAddress(server.getInetAddress(), server.getLocalPort()));
+				Socket client = new Socket(server.getInetAddress(), server.getLocalPort());
 				Socket peer = server.accept()) {
 			Thread sender = Thread.ofVirtual().start(() -> {
 				try {
@@ -120,23 +130,6 @@ public class VoteForwarderHandshakeTest {
 		}
 	}
 
-	@Test
-	public void stalledPayloadWriteExpiresAfterPartialProgress() throws Exception {
-		try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
-				SocketChannel client = SocketChannel.open(new InetSocketAddress(server.getInetAddress(), server.getLocalPort()));
-				Socket peer = server.accept();
-				Selector selector = Selector.open()) {
-			client.socket().setSendBufferSize(4096);
-			client.configureBlocking(false);
-			Method write = VoteForwarder.class.getDeclaredMethod("writePayload",
-					SocketChannel.class, Selector.class, byte[].class, long.class);
-			write.setAccessible(true);
-			assertThrows(SocketTimeoutException.class, () -> call(write, null, client, selector,
-					new byte[4 * 1024 * 1024], System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(300)));
-			peer.setSoTimeout(1000);
-			assertEquals(0, peer.getInputStream().read());
-		}
-	}
 
 	@Test
 	public void queuedResolutionExpiresWithoutFreeingTheRunningResolverSlot() throws Throwable {
@@ -184,7 +177,20 @@ public class VoteForwarderHandshakeTest {
 					System.nanoTime() + TimeUnit.SECONDS.toNanos(1)));
 			queued.get(2, TimeUnit.SECONDS);
 			assertEquals(0, resolver.getQueue().size());
+			var forced = new FutureTask<Void>(() -> {
+				assertThrows(CancellationException.class, () -> call(resolve, forwarder, target,
+						System.nanoTime() + TimeUnit.SECONDS.toNanos(4)));
+				return null;
+			});
+			Thread.ofVirtual().start(forced);
+			waitUntil = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+			while (resolver.getQueue().isEmpty() && System.nanoTime() < waitUntil) {
+				Thread.sleep(1);
+			}
+			assertEquals(1, resolver.getQueue().size());
 			call(stop, forwarder);
+			forced.get(2, TimeUnit.SECONDS);
+			assertEquals(0, resolver.getQueue().size());
 			assertTrue(resolver.isShutdown());
 			assertTrue(!resolver.isTerminated());
 		} finally {
@@ -245,6 +251,260 @@ public class VoteForwarderHandshakeTest {
 		}
 	}
 
+	@Test
+	public void separateJvmUsesSocksWithoutConnectingToTheTargetDirectly() throws Exception {
+		InetAddress loopback = InetAddress.getByName("127.0.0.1");
+		try (ServerSocket proxy = new ServerSocket(0, 1, loopback);
+				ServerSocket directSentinel = new ServerSocket(0, 1, loopback)) {
+			proxy.setSoTimeout(7000);
+			directSentinel.setSoTimeout(200);
+			String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+			String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+			Process child = new ProcessBuilder(java, "-DsocksProxyHost=127.0.0.1",
+					"-DsocksProxyPort=" + proxy.getLocalPort(), "-DsocksNonProxyHosts=", "-cp", classpath,
+					SocksClient.class.getName(), Integer.toString(directSentinel.getLocalPort()))
+					.redirectErrorStream(true).start();
+			try (Socket peer = proxy.accept()) {
+				peer.setSoTimeout(3000);
+				var in = new DataInputStream(peer.getInputStream());
+				var out = peer.getOutputStream();
+				assertEquals(5, in.readUnsignedByte());
+				int methods = in.readUnsignedByte();
+				in.readNBytes(methods);
+				out.write(new byte[] {5, 0});
+				assertEquals(5, in.readUnsignedByte());
+				assertEquals(1, in.readUnsignedByte());
+				assertEquals(0, in.readUnsignedByte());
+				assertEquals(1, in.readUnsignedByte());
+				assertEquals("127.0.0.1", InetAddress.getByAddress(in.readNBytes(4)).getHostAddress());
+				assertEquals(directSentinel.getLocalPort(), in.readUnsignedShort());
+				out.write(new byte[] {5, 0, 0, 1, 127, 0, 0, 1, 0, 0});
+				out.write("VOTIFIER 2 challenge\r\n".getBytes(StandardCharsets.UTF_8));
+				String received = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+				assertTrue(received.contains("TestVoter"));
+				assertTrue(received.endsWith("\r\n"));
+				assertThrows(SocketTimeoutException.class, directSentinel::accept);
+				assertTrue(child.waitFor(5, TimeUnit.SECONDS));
+				assertEquals(0, child.exitValue(), () -> {
+					try {
+						return new String(child.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+					} catch (IOException ex) {
+						return ex.toString();
+					}
+				});
+			} finally {
+				if (child.isAlive()) {
+					child.destroyForcibly();
+					child.waitFor(2, TimeUnit.SECONDS);
+				}
+			}
+		}
+	}
+
+	@Test
+	public void writeBackpressureExpiresAndClosesTheRealSocket() throws Exception {
+		InetAddress loopback = InetAddress.getByName("127.0.0.1");
+		try (ServerSocket backend = new ServerSocket(0, 1, loopback)) {
+			backend.setReceiveBufferSize(4096);
+			backend.setSoTimeout(3000);
+			var signingKey = KeyGenerator.getInstance("HmacSHA256").generateKey();
+			var target = new ForwardServer(true, "127.0.0.1", backend.getLocalPort(), "", signingKey);
+			var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true, null,
+					Map.of(), Set.of(), null, Map.of("test", target));
+			var receiver = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), ignored -> {});
+			var writing = new CountDownLatch(1);
+			Socket smallBuffer = new Socket() {
+				@Override
+				public OutputStream getOutputStream() throws IOException {
+					return new FilterOutputStream(super.getOutputStream()) {
+						@Override
+						public void write(byte[] payload) throws IOException {
+							writing.countDown();
+							out.write(payload);
+						}
+					};
+				}
+			};
+			smallBuffer.setSendBufferSize(4096);
+			VoteForwarder forwarder = forwarderWithSockets(receiver, () -> smallBuffer);
+			int submittedBytes = 4 * 1024 * 1024;
+			Thread sender = Thread.ofVirtual().start(() -> forwarder.forwardVote(
+					new Vote("example.test", "TestVoter", "A".repeat(submittedBytes), "TestTimestamp")));
+			try (Socket peer = backend.accept()) {
+				peer.getOutputStream().write("VOTIFIER 2 challenge\n".getBytes(StandardCharsets.UTF_8));
+				assertTrue(writing.await(3, TimeUnit.SECONDS));
+				sender.join(7000);
+				assertFalse(sender.isAlive());
+				assertTrue(smallBuffer.isClosed());
+				peer.setSoTimeout(2000);
+				byte[] partial = peer.getInputStream().readAllBytes();
+				assertTrue(partial.length > 0 && partial.length < submittedBytes,
+						"Peer observed an incomplete write after backpressure");
+			} finally {
+				stopForTest(forwarder);
+				receiver.shutdown();
+				sender.join(2000);
+			}
+		}
+	}
+
+	@Test
+	public void aBlockedCloseRetainsCapacityWithoutBlockingOtherExpirations() throws Throwable {
+		var blocked = new CountDownLatch(1);
+		var release = new CountDownLatch(1);
+		var fastClosed = new CountDownLatch(1);
+		var slowCloses = new AtomicInteger();
+		var quickCloses = new AtomicInteger();
+		var socketCounter = new AtomicInteger();
+		VoteForwarder forwarder = forwarderWithSockets(null, () -> {
+			boolean slow = socketCounter.getAndIncrement() == 0;
+			return new Socket() {
+				@Override
+				public void close() throws IOException {
+					if (slow) {
+						slowCloses.incrementAndGet();
+						blocked.countDown();
+						try {
+							release.await(4, TimeUnit.SECONDS);
+						} catch (InterruptedException ex) {
+							Thread.currentThread().interrupt();
+						}
+					} else {
+						quickCloses.incrementAndGet();
+					}
+					super.close();
+					if (!slow) {
+						fastClosed.countDown();
+					}
+				}
+			};
+		});
+		Method register = VoteForwarder.class.getDeclaredMethod("registerAttempt", boolean.class, String.class, long.class);
+		register.setAccessible(true);
+		Method terminated = VoteForwarder.class.getDeclaredMethod("isTerminated");
+		terminated.setAccessible(true);
+		try {
+			call(register, forwarder, true, "direct", System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200));
+			assertTrue(blocked.await(2, TimeUnit.SECONDS));
+			assertThrows(RejectedExecutionException.class, () -> call(register, forwarder, true, "direct",
+					System.nanoTime() + TimeUnit.SECONDS.toNanos(1)));
+			call(register, forwarder, false, "runtime", System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200));
+			assertTrue(fastClosed.await(2, TimeUnit.SECONDS));
+			stopForTest(forwarder);
+			assertFalse((boolean) call(terminated, forwarder));
+			assertEquals(1, slowCloses.get());
+			assertEquals(1, quickCloses.get());
+		} finally {
+			release.countDown();
+			stopForTest(forwarder);
+		}
+		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+		while (!(boolean) call(terminated, forwarder) && System.nanoTime() < deadline) {
+			Thread.sleep(1);
+		}
+		assertTrue((boolean) call(terminated, forwarder));
+	}
+
+	@Test
+	public void queuedRuntimeCallCanDrainWhileDirectConnectHookSurvivesStop() throws Throwable {
+		var stalled = new CountDownLatch(1);
+		var release = new CountDownLatch(1);
+		var writes = new ByteArrayOutputStream();
+		var socketCount = new AtomicInteger();
+		var target = new ForwardServer(true, "127.0.0.1", 1234, "",
+				KeyGenerator.getInstance("HmacSHA256").generateKey());
+		var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true, null,
+				Map.of(), Set.of(), null, Map.of("test", target));
+		var receiver = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), ignored -> {});
+		var forwarder = forwarderWithSockets(receiver, () -> {
+			boolean direct = socketCount.getAndIncrement() == 0;
+			return new Socket() {
+				@Override
+				public void connect(SocketAddress destination, int timeout) throws IOException {
+					if (direct) {
+						stalled.countDown();
+						try {
+							release.await(10, TimeUnit.SECONDS);
+						} catch (InterruptedException ex) {
+							Thread.currentThread().interrupt();
+						}
+						throw new IOException("synthetic non-cooperative connect hook");
+					}
+				}
+
+				@Override
+				public InputStream getInputStream() {
+					return new ByteArrayInputStream("VOTIFIER 2 challenge\r\n".getBytes(StandardCharsets.UTF_8));
+				}
+
+				@Override
+				public OutputStream getOutputStream() {
+					return writes;
+				}
+			};
+		});
+		Method seal = VoteForwarder.class.getDeclaredMethod("sealDirectCalls");
+		seal.setAccessible(true);
+		Method queued = VoteForwarder.class.getDeclaredMethod("forwardQueuedVote", Vote.class);
+		queued.setAccessible(true);
+		Method terminated = VoteForwarder.class.getDeclaredMethod("isTerminated");
+		terminated.setAccessible(true);
+		var vote = new Vote("example.test", "TestVoter", "", "TestTimestamp");
+		Thread direct = Thread.ofVirtual().start(() -> forwarder.forwardVote(vote));
+		try {
+			assertTrue(stalled.await(2, TimeUnit.SECONDS));
+			call(seal, forwarder);
+			forwarder.forwardVote(vote);
+			assertEquals(1, socketCount.get());
+			call(queued, forwarder, vote);
+			assertEquals(2, socketCount.get());
+			assertTrue(writes.toString(StandardCharsets.UTF_8).contains("TestVoter"));
+			stopForTest(forwarder);
+			assertTrue(direct.isAlive());
+			assertFalse((boolean) call(terminated, forwarder));
+		} finally {
+			release.countDown();
+			direct.join(2000);
+			stopForTest(forwarder);
+			receiver.shutdown();
+		}
+		assertFalse(direct.isAlive());
+		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+		while (!(boolean) call(terminated, forwarder) && System.nanoTime() < deadline) {
+			Thread.sleep(1);
+		}
+		assertTrue((boolean) call(terminated, forwarder));
+	}
+
+	private static VoteForwarder forwarderWithSockets(VoteReceiver receiver, Supplier<Socket> sockets) throws Exception {
+		var constructor = VoteForwarder.class.getDeclaredConstructor(VoteReceiver.class, int.class,
+				BiFunction.class, Supplier.class);
+		constructor.setAccessible(true);
+		BiFunction<String, Integer, InetSocketAddress> resolve = InetSocketAddress::new;
+		return constructor.newInstance(receiver, 1, resolve, sockets);
+	}
+
+	private static void stopForTest(VoteForwarder forwarder) throws Exception {
+		Method stop = VoteForwarder.class.getDeclaredMethod("stop");
+		stop.setAccessible(true);
+		stop.invoke(forwarder);
+	}
+
+	public static final class SocksClient {
+		public static void main(String[] arguments) throws Exception {
+			var signingKey = KeyGenerator.getInstance("HmacSHA256").generateKey();
+			var target = new ForwardServer(true, "127.0.0.1", Integer.parseInt(arguments[0]), "", signingKey);
+			var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true, null,
+					Map.of(), Set.of(), null, Map.of("test", target));
+			var receiver = VoteReceiver.bind(settings, Logger.getAnonymousLogger(), accepted -> {});
+			try {
+				new VoteForwarder(receiver).forwardVote(new Vote("example.test", "TestVoter", "", "TestTimestamp"));
+			} finally {
+				receiver.shutdown();
+			}
+		}
+	}
+
 	private static Object call(Method method, Object receiver, Object... arguments) throws Throwable {
 		try {
 			return method.invoke(receiver, arguments);
@@ -253,15 +513,9 @@ public class VoteForwarderHandshakeTest {
 		}
 	}
 
-	private static void readSocketHandshake(SocketChannel channel, int timeoutMillis) throws Throwable {
-		Method parser = VoteForwarder.class.getDeclaredMethod("readChannelGreeting",
-				SocketChannel.class, Selector.class, long.class);
+	private static void readSocketHandshake(Socket socket, int timeoutMillis) throws Throwable {
+		Method parser = VoteForwarder.class.getDeclaredMethod("readSocketGreeting", Socket.class, long.class);
 		parser.setAccessible(true);
-		channel.configureBlocking(false);
-		try (Selector selector = Selector.open()) {
-			parser.invoke(null, channel, selector, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis));
-		} catch (InvocationTargetException failure) {
-			throw failure.getCause();
-		}
+		call(parser, null, socket, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis));
 	}
 }

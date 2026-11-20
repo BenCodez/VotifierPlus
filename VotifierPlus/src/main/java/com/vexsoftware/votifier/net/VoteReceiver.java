@@ -274,6 +274,9 @@ public abstract class VoteReceiver extends Thread {
 	}
 
 	private boolean retire() {
+		if (voteForwarder != null) {
+			voteForwarder.sealDirectCalls();
+		}
 		List<Socket> sockets;
 		synchronized (lifecycleLock) {
 			sockets = List.copyOf(connections);
@@ -492,7 +495,7 @@ public abstract class VoteReceiver extends Thread {
 		try {
 			forwardExecutor.execute(() -> {
 				try {
-					voteForwarder.forwardVote(vote);
+					voteForwarder.forwardQueuedVote(vote);
 				} catch (Exception ex) {
 					logWarning("Error forwarding vote: " + VoteLogSafety.exceptionType(ex));
 				}
