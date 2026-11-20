@@ -206,11 +206,12 @@ public class VoteForwarder {
 			((FutureTask<?>) queued).cancel(false);
 		}
 		for (var entry : channels.entrySet()) {
-			entry.getValue().wakeup();
 			try {
 				entry.getKey().close();
 			} catch (IOException ex) {
 				receiver.debug("Failed to close forwarding socket: " + VoteLogSafety.exceptionType(ex));
+			} finally {
+				entry.getValue().wakeup();
 			}
 		}
 		return channels.size();

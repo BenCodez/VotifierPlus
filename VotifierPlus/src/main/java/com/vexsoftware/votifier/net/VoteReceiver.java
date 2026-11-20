@@ -113,6 +113,7 @@ public abstract class VoteReceiver extends Thread {
 	private final CountDownLatch retirementComplete = new CountDownLatch(1);
 	private Thread retirementOwner;
 	private volatile boolean retirementCleanupComplete;
+	private volatile boolean connectionCloseFailed;
 	private static final int DRAIN_SECONDS = 3;
 
 	@Getter
@@ -202,13 +203,21 @@ public abstract class VoteReceiver extends Thread {
 			if (!running) {
 				throw new IllegalStateException("Receiver has been shut down");
 			}
+			if (server != null && !server.isClosed()) {
+				throw new IllegalStateException("Receiver already owns a listener");
+			}
+			ServerSocket next = new ServerSocket();
 			try {
-				server = new ServerSocket();
-				server.bind(new InetSocketAddress(host, port));
-				debug("Bound to " + server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
+				next.bind(new InetSocketAddress(host, port));
+				debug("Bound to " + next.getInetAddress().getHostAddress() + ":" + next.getLocalPort());
+				server = next;
 			} catch (Exception ex) {
-				logSevere(
-						"Error initializing vote receiver. Please verify that the configured IP address and port are not already in use.");
+				try {
+					next.close();
+				} catch (IOException closeFailure) {
+					ex.addSuppressed(closeFailure);
+				}
+				logSevere("Error initializing vote receiver. Please verify that the configured IP address and port are not already in use.");
 				ex.printStackTrace();
 				throw new Exception(ex);
 			}
@@ -230,7 +239,7 @@ public abstract class VoteReceiver extends Thread {
 	 * terminated. Platform scheduler work is outside this receiver's ownership.
 	 */
 	public final boolean isRetired() {
-		return retirementCleanupComplete && server != null && server.isClosed() && !isAlive()
+		return retirementCleanupComplete && !connectionCloseFailed && server != null && server.isClosed() && !isAlive()
 				&& (connectionExecutor == null || connectionExecutor.isTerminated())
 				&& (forwardExecutor == null || forwardExecutor.isTerminated())
 				&& (voteForwarder == null || voteForwarder.isTerminated());
@@ -509,7 +518,11 @@ public abstract class VoteReceiver extends Thread {
 	private void closeConnection(Socket socket) {
 		try {
 			socket.close();
+			if (!socket.isClosed()) {
+				connectionCloseFailed = true;
+			}
 		} catch (IOException ex) {
+			connectionCloseFailed = true;
 			debug(ex);
 		}
 	}
@@ -670,18 +683,7 @@ public abstract class VoteReceiver extends Thread {
 			if (getServer() != null) {
 				throw new IllegalStateException("Bind a new receiver to replace this listener");
 			}
-			try {
-				super.initialize();
-			} catch (Exception failure) {
-				if (getServer() != null) {
-					try {
-						getServer().close();
-					} catch (IOException closeFailure) {
-						failure.addSuppressed(closeFailure);
-					}
-				}
-				throw failure;
-			}
+			super.initialize();
 		}
 	}
 
