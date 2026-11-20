@@ -112,6 +112,7 @@ public abstract class VoteReceiver extends Thread {
 	private final AtomicLong rejectedForwardingJobs = new AtomicLong();
 	private final CountDownLatch retirementComplete = new CountDownLatch(1);
 	private Thread retirementOwner;
+	private volatile boolean retirementCleanupComplete;
 	private static final int DRAIN_SECONDS = 3;
 
 	@Getter
@@ -197,16 +198,42 @@ public abstract class VoteReceiver extends Thread {
 
 
 	public void initialize() throws Exception {
-		try {
-			server = new ServerSocket();
-			server.bind(new InetSocketAddress(host, port));
-			debug("Bound to " + server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
-		} catch (Exception ex) {
-			logSevere(
-					"Error initializing vote receiver. Please verify that the configured IP address and port are not already in use.");
-			ex.printStackTrace();
-			throw new Exception(ex);
+		synchronized (lifecycleLock) {
+			if (!running) {
+				throw new IllegalStateException("Receiver has been shut down");
+			}
+			try {
+				server = new ServerSocket();
+				server.bind(new InetSocketAddress(host, port));
+				debug("Bound to " + server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
+			} catch (Exception ex) {
+				logSevere(
+						"Error initializing vote receiver. Please verify that the configured IP address and port are not already in use.");
+				ex.printStackTrace();
+				throw new Exception(ex);
+			}
 		}
+	}
+
+	@Override
+	public void start() {
+		synchronized (lifecycleLock) {
+			if (!running) {
+				throw new IllegalThreadStateException("Receiver has been shut down");
+			}
+			super.start();
+		}
+	}
+
+	/**
+	 * Returns whether shutdown cleanup completed and all receiver-owned work has
+	 * terminated. Platform scheduler work is outside this receiver's ownership.
+	 */
+	public final boolean isRetired() {
+		return retirementCleanupComplete && server != null && server.isClosed() && !isAlive()
+				&& (connectionExecutor == null || connectionExecutor.isTerminated())
+				&& (forwardExecutor == null || forwardExecutor.isTerminated())
+				&& (voteForwarder == null || voteForwarder.isTerminated());
 	}
 
 	/**
@@ -231,21 +258,23 @@ public abstract class VoteReceiver extends Thread {
 		}
 
 		try {
-			retire();
+			retirementCleanupComplete = retire();
 		} finally {
 			retirementComplete.countDown();
 		}
 	}
 
-	private void retire() {
+	private boolean retire() {
 		List<Socket> sockets;
 		synchronized (lifecycleLock) {
 			sockets = List.copyOf(connections);
 			connections.clear();
 		}
+		boolean listenerClosed = false;
 		if (server != null) {
 			try {
 				server.close();
+				listenerClosed = server.isClosed();
 			} catch (IOException ex) {
 				debug(ex);
 			}
@@ -254,12 +283,19 @@ public abstract class VoteReceiver extends Thread {
 		try {
 			shutdownExecutor(connectionExecutor, "connection", null);
 		} finally {
-			shutdownExecutor(forwardExecutor, "forward", () -> voteForwarder.stop());
+			try {
+				shutdownExecutor(forwardExecutor, "forward", () -> voteForwarder.stop());
+			} finally {
+				if (voteForwarder != null) {
+					voteForwarder.stop();
+				}
+			}
 			long rejected = rejectedForwardingJobs.get();
 			if (rejected != 0) {
 				logWarning("Forwarding queue rejections at receiver retirement: " + rejected);
 			}
 		}
+		return listenerClosed;
 	}
 
 	private void awaitRetirement() {
@@ -333,25 +369,23 @@ public abstract class VoteReceiver extends Thread {
 
 	@Override
 	public void run() {
-		throttleService = new VoteThrottleService(getThrottleConfig());
-		voteForwarder = new VoteForwarder(this);
-
-		if (isUseTokens() && !isDisableV1()) {
-			logWarning("TokenSupport is enabled, but legacy Votifier V1 votes are still accepted. "
-					+ "Set DisableV1: true to require token-authenticated V2 votes.");
-		}
-
-		synchronized (lifecycleLock) {
-			if (!running) {
-				return;
-			}
-			connectionExecutor = createExecutor(getConnectionWorkerCount(), getConnectionQueueCapacity(),
-					"Votifier-Connection-");
-			forwardExecutor = createExecutor(getForwardWorkerCount(), getForwardQueueCapacity(), "Votifier-Forwarder-");
-		}
-
-		VoteConnectionHandler handler = new VoteConnectionHandler(this, throttleService);
 		try {
+			synchronized (lifecycleLock) {
+				if (!running) {
+					return;
+				}
+				throttleService = new VoteThrottleService(getThrottleConfig());
+				int forwardWorkers = getForwardWorkerCount();
+				voteForwarder = new VoteForwarder(this, forwardWorkers);
+				connectionExecutor = createExecutor(getConnectionWorkerCount(), getConnectionQueueCapacity(),
+						"Votifier-Connection-");
+				forwardExecutor = createExecutor(forwardWorkers, getForwardQueueCapacity(), "Votifier-Forwarder-");
+			}
+			if (isUseTokens() && !isDisableV1()) {
+				logWarning("TokenSupport is enabled, but legacy Votifier V1 votes are still accepted. "
+						+ "Set DisableV1: true to require token-authenticated V2 votes.");
+			}
+			VoteConnectionHandler handler = new VoteConnectionHandler(this, throttleService);
 			while (running) {
 				try {
 					submitConnection(acceptSocket(), handler);

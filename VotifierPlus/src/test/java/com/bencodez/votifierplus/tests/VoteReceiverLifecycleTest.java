@@ -1,6 +1,7 @@
 package com.bencodez.votifierplus.tests;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -245,6 +246,7 @@ public class VoteReceiverLifecycleTest {
 			receiver.join(2000);
 			assertFalse(shutdown.isAlive());
 			assertFalse(receiver.isAlive());
+			assertFalse(receiver.isRetired());
 			assertTrue(worker.isAlive(), "Listener exit does not terminate a callback that ignores interruption");
 			assertTrue(receiver.getWarnings().contains("Unable to fully shut down connection executor."));
 		} finally {
@@ -252,6 +254,7 @@ public class VoteReceiverLifecycleTest {
 			if (worker != null) {
 				worker.join(2000);
 				assertFalse(worker.isAlive(), "Cooperating after release lets the same worker retire");
+				assertTrue(receiver.isRetired());
 			}
 		}
 	}
@@ -283,6 +286,48 @@ public class VoteReceiverLifecycleTest {
 		}
 	}
 
+	@Test
+	public void shutdownBeforeStartSealsTheInstance() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		assertFalse(receiver.isRetired());
+		receiver.shutdown();
+		assertTrue(receiver.isRetired());
+		assertThrows(IllegalThreadStateException.class, receiver::start);
+		assertThrows(IllegalStateException.class, receiver::initialize);
+		assertTrue(receiver.isRetired());
+	}
+
+	@Test
+	public void partialStartupRetiresTheListenerAndOwnedExecutors() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		receiver.invalidForwardQueue = true;
+		var failure = new LinkedBlockingQueue<Throwable>();
+		receiver.setUncaughtExceptionHandler((thread, error) -> failure.add(error));
+		receiver.start();
+		receiver.join(3000);
+		assertFalse(receiver.isAlive());
+		assertTrue(failure.poll(2, TimeUnit.SECONDS) instanceof IllegalArgumentException);
+		assertTrue(receiver.isRetired());
+	}
+
+	@Test
+	public void failedCloseIsNotSuccessfulRetirement() throws Exception {
+		receiver = new CapturingVoteReceiver();
+		receiver.getServer().close();
+		Field server = VoteReceiver.class.getDeclaredField("server");
+		server.setAccessible(true);
+		server.set(receiver, new ServerSocket() {
+			@Override
+			public void close() throws IOException {
+				super.close();
+				throw new IOException("synthetic cleanup failure");
+			}
+		});
+		receiver.shutdown();
+		assertTrue(receiver.getServer().isClosed());
+		assertFalse(receiver.isRetired());
+	}
+
 	private void waitForAccept() throws InterruptedException {
 		assertTrue(receiver.awaitingAccept(2, TimeUnit.SECONDS), "Receiver did not reach accept()");
 	}
@@ -297,6 +342,7 @@ public class VoteReceiverLifecycleTest {
 		private final CountDownLatch resumeAccept = new CountDownLatch(1);
 		private final LinkedBlockingQueue<Socket> accepted = new LinkedBlockingQueue<>();
 		private boolean pauseAccept;
+		private boolean invalidForwardQueue;
 		private boolean pauseProcessing;
 		private Set<String> servers = Set.of();
 		private ForwardServer target;
@@ -340,7 +386,7 @@ public class VoteReceiverLifecycleTest {
 
 		@Override
 		public int getForwardQueueCapacity() {
-			return 1;
+			return invalidForwardQueue ? 0 : 1;
 		}
 
 		@Override
