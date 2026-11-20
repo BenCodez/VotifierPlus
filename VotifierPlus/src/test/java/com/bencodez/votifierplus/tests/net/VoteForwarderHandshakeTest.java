@@ -42,6 +42,9 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Logger;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.Mac;
@@ -525,11 +528,110 @@ public class VoteForwarderHandshakeTest {
 			stopForTest(forwarder);
 			expiry.get(2, TimeUnit.SECONDS);
 			assertTrue(closeCalled.await(2, TimeUnit.SECONDS));
+			for (String poolName : new String[] {"closers", "resolver", "deadlines"}) {
+				var field = VoteForwarder.class.getDeclaredField(poolName);
+				field.setAccessible(true);
+				assertTrue(((java.util.concurrent.ExecutorService) field.get(forwarder)).awaitTermination(2, TimeUnit.SECONDS));
+			}
 			assertEquals(1, closeCalls.get());
-			assertFalse((boolean) call(terminated, forwarder));
+			assertFalse((boolean) call(terminated, forwarder), "A failed close permanently fences retirement");
 		} finally {
 			stopForTest(forwarder);
 			receiver.shutdown();
+		}
+	}
+
+	@Test
+	public void normalCompletionReportsSuccessOnlyWhenItWinsBeforeExpiryOrStop() throws Throwable {
+		for (String winner : new String[] {"completion", "expiry", "stop"}) {
+			var writing = new CountDownLatch(1);
+			var release = new CountDownLatch(1);
+			var closes = new AtomicInteger();
+			var successes = new AtomicInteger();
+			var logger = Logger.getAnonymousLogger();
+			logger.setUseParentHandlers(false);
+			logger.setLevel(Level.ALL);
+			logger.addHandler(new Handler() {
+				@Override
+				public void publish(LogRecord record) {
+					if (record.getMessage().startsWith("Payload forwarded")) {
+						successes.incrementAndGet();
+					}
+				}
+				@Override public void flush() {}
+				@Override public void close() {}
+			});
+			var destination = new ForwardServer(true, "127.0.0.1", 1234, "",
+					KeyGenerator.getInstance("HmacSHA256").generateKey());
+			var settings = new VoteReceiver.Settings("127.0.0.1", 0, "test", true, true, null,
+					Map.of(), Set.of(), null, Map.of("test", destination));
+			var receiver = VoteReceiver.bind(settings, logger, ignored -> {});
+			var forwarder = forwarderWithSockets(receiver, () -> new Socket() {
+				@Override public void connect(SocketAddress address, int timeout) {}
+
+				@Override
+				public InputStream getInputStream() {
+					return new ByteArrayInputStream("VOTIFIER 2 challenge\r\n".getBytes(StandardCharsets.UTF_8));
+				}
+
+				@Override
+				public OutputStream getOutputStream() {
+					return new ByteArrayOutputStream() {
+						@Override
+						public void flush() throws IOException {
+							writing.countDown();
+							try {
+								if (!release.await(3, TimeUnit.SECONDS)) {
+									throw new IOException("test flush was not released");
+								}
+							} catch (InterruptedException ex) {
+								Thread.currentThread().interrupt();
+								throw new IOException(ex);
+							}
+						}
+					};
+				}
+
+				@Override
+				public void close() throws IOException {
+					closes.incrementAndGet();
+					super.close();
+				}
+			});
+			var sender = new FutureTask<Void>(() -> {
+				forwarder.forwardVote(new Vote("example.test", "TestVoter", "", "TestTimestamp"));
+				return null;
+			});
+			Thread.ofVirtual().start(sender);
+			try {
+				assertTrue(writing.await(2, TimeUnit.SECONDS));
+				if (winner.equals("expiry")) {
+					var attempts = VoteForwarder.class.getDeclaredField("attempts");
+					attempts.setAccessible(true);
+					var lock = VoteForwarder.class.getDeclaredField("lifecycleLock");
+					lock.setAccessible(true);
+					synchronized (lock.get(forwarder)) {
+						Object attempt = ((Set<?>) attempts.get(forwarder)).iterator().next();
+						Method expire = VoteForwarder.class.getDeclaredMethod("expire", attempt.getClass());
+						expire.setAccessible(true);
+						call(expire, forwarder, attempt);
+					}
+				} else if (winner.equals("stop")) {
+					stopForTest(forwarder);
+				}
+				release.countDown();
+				sender.get(2, TimeUnit.SECONDS);
+				stopForTest(forwarder);
+				var closerField = VoteForwarder.class.getDeclaredField("closers");
+				closerField.setAccessible(true);
+				assertTrue(((ThreadPoolExecutor) closerField.get(forwarder)).awaitTermination(2, TimeUnit.SECONDS));
+				assertEquals(1, closes.get());
+				assertEquals(winner.equals("completion") ? 1 : 0, successes.get());
+			} finally {
+				release.countDown();
+				stopForTest(forwarder);
+				receiver.shutdown();
+			}
 		}
 	}
 
