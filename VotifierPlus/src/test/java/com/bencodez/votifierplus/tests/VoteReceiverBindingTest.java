@@ -45,28 +45,7 @@ public class VoteReceiverBindingTest {
 		int port = bound.getServer().getLocalPort();
 		try {
 			bound.start();
-			try (Socket client = new Socket("127.0.0.1", port)) {
-				client.setSoTimeout(5000);
-				var reader = new BufferedReader(new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
-				String greeting = reader.readLine();
-				assertTrue(greeting.startsWith("VOTIFIER 2 "));
-				JsonObject inner = new JsonObject();
-				inner.addProperty("serviceName", "example.test");
-				inner.addProperty("username", "TestVoter");
-				inner.addProperty("address", "127.0.0.1");
-				inner.addProperty("timestamp", "TestTimestamp");
-				inner.addProperty("challenge", greeting.substring("VOTIFIER 2 ".length()));
-				String payload = inner.toString();
-
-				Mac mac = Mac.getInstance("HmacSHA256");
-				mac.init(dummyTokenKey);
-				JsonObject envelope = new JsonObject();
-				envelope.addProperty("payload", payload);
-				envelope.addProperty("signature", Base64.getEncoder()
-						.encodeToString(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8))));
-				client.getOutputStream().write((envelope + "\n").getBytes(StandardCharsets.UTF_8));
-				assertTrue(reader.readLine().contains("\"status\":\"ok\""));
-			}
+			assertVoteAccepted(port, dummyTokenKey);
 			Vote vote = accepted.poll(5, TimeUnit.SECONDS);
 			assertNotNull(vote);
 			assertEquals("TestVoter", vote.getUsername());
@@ -79,6 +58,31 @@ public class VoteReceiverBindingTest {
 		assertNull(accepted.poll());
 		try (ServerSocket rebound = new ServerSocket()) {
 			rebound.bind(new InetSocketAddress("127.0.0.1", port));
+		}
+	}
+
+	static void assertVoteAccepted(int port, Key dummyTokenKey) throws Exception {
+		try (Socket client = new Socket("127.0.0.1", port)) {
+			client.setSoTimeout(5000);
+			var reader = new BufferedReader(new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
+			String greeting = reader.readLine();
+			assertTrue(greeting.startsWith("VOTIFIER 2 "));
+			JsonObject inner = new JsonObject();
+			inner.addProperty("serviceName", "example.test");
+			inner.addProperty("username", "TestVoter");
+			inner.addProperty("address", "127.0.0.1");
+			inner.addProperty("timestamp", "TestTimestamp");
+			inner.addProperty("challenge", greeting.substring("VOTIFIER 2 ".length()));
+			String payload = inner.toString();
+
+			Mac mac = Mac.getInstance("HmacSHA256");
+			mac.init(dummyTokenKey);
+			JsonObject envelope = new JsonObject();
+			envelope.addProperty("payload", payload);
+			envelope.addProperty("signature", Base64.getEncoder()
+					.encodeToString(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8))));
+			client.getOutputStream().write((envelope + "\n").getBytes(StandardCharsets.UTF_8));
+			assertTrue(reader.readLine().contains("\"status\":\"ok\""));
 		}
 	}
 

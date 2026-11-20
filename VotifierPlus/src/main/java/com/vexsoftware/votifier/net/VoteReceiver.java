@@ -85,6 +85,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.logging.Level;
@@ -108,6 +109,7 @@ public abstract class VoteReceiver extends Thread {
 	private volatile boolean running = true;
 	private final Object lifecycleLock = new Object();
 	private final Set<Socket> connections = new HashSet<>();
+	private final AtomicLong rejectedForwardingJobs = new AtomicLong();
 	private final CountDownLatch retirementComplete = new CountDownLatch(1);
 	private Thread retirementOwner;
 	private static final int DRAIN_SECONDS = 3;
@@ -253,6 +255,10 @@ public abstract class VoteReceiver extends Thread {
 			shutdownExecutor(connectionExecutor, "connection", null);
 		} finally {
 			shutdownExecutor(forwardExecutor, "forward", () -> voteForwarder.stop());
+			long rejected = rejectedForwardingJobs.get();
+			if (rejected != 0) {
+				logWarning("Forwarding queue rejections at receiver retirement: " + rejected);
+			}
 		}
 	}
 
@@ -437,6 +443,8 @@ public abstract class VoteReceiver extends Thread {
 		}
 	}
 
+	// Protocol OK and local delivery precede best-effort forwarding. A full
+	// queue can lose forwarding but must never make ingress do outbound work.
 	private void submitForward(Vote vote) {
 		try {
 			forwardExecutor.execute(() -> {
@@ -447,7 +455,10 @@ public abstract class VoteReceiver extends Thread {
 				}
 			});
 		} catch (RejectedExecutionException ex) {
-			throttleService.logWarning(this, "forward-queue", "Unable to queue vote forwarding: forwarding executor is full or stopping.");
+			long rejected = rejectedForwardingJobs.incrementAndGet();
+			throttleService.logWarning(this, "forward-queue",
+					"Unable to queue vote forwarding: forwarding executor is full or stopping. Total rejected jobs: "
+							+ rejected);
 		}
 	}
 

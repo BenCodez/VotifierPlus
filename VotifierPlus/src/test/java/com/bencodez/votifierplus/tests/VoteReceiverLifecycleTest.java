@@ -9,7 +9,6 @@ import java.io.IOException;
 import java.net.Socket;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.lang.reflect.Method;
 import java.lang.reflect.Field;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.security.Key;
@@ -22,6 +21,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.crypto.KeyGenerator;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -121,23 +122,25 @@ public class VoteReceiverLifecycleTest {
 	}
 
 	@Test
-	public void fullForwardingQueueNeverRunsTheOutboundJobOnTheSubmittingThread() throws Exception {
+	public void fullForwardingQueueStillAcknowledgesAndDeliversVotesLocally() throws Exception {
 		receiver = new CapturingVoteReceiver();
 		try (ServerSocket backend = new ServerSocket(0, 3, InetAddress.getLoopbackAddress())) {
 			backend.setSoTimeout(2000);
 			receiver.servers = Set.of("test");
 			receiver.target = new ForwardServer(true, backend.getInetAddress().getHostAddress(),
 					backend.getLocalPort(), "", null);
+			receiver.signingKey = KeyGenerator.getInstance("HmacSHA256").generateKey();
 			receiver.start();
-			waitForAccept();
-			Method submit = VoteReceiver.class.getDeclaredMethod("submitForward", Vote.class);
-			submit.setAccessible(true);
-			Vote vote = new Vote("example.test", "TestVoter", "", "TestTimestamp");
-			submit.invoke(receiver, vote);
+			int port = receiver.getServer().getLocalPort();
+			VoteReceiverBindingTest.assertVoteAccepted(port, receiver.signingKey);
 			try (Socket stalled = backend.accept()) {
-				submit.invoke(receiver, vote);
-				submit.invoke(receiver, vote);
-				assertTrue(receiver.getWarnings().stream().anyMatch(warning -> warning.contains("Unable to queue")));
+				for (int i = 0; i < 3; i++) {
+					VoteReceiverBindingTest.assertVoteAccepted(port, receiver.signingKey);
+				}
+				for (int i = 0; i < 4; i++) {
+					assertNotNull(receiver.votes.poll(2, TimeUnit.SECONDS));
+				}
+				assertTrue(receiver.forwardingRejected.await(2, TimeUnit.SECONDS));
 				var retire = new Thread(() -> {
 					Thread.currentThread().interrupt();
 					receiver.shutdown();
@@ -147,6 +150,8 @@ public class VoteReceiverLifecycleTest {
 				assertFalse(retire.isAlive());
 				assertTrue(receiver.getWarnings().stream().anyMatch(warning ->
 						warning.contains("discarded queued jobs=1, active socket close attempts=1")));
+				assertTrue(receiver.getWarnings().contains("Forwarding queue rejections at receiver retirement: 2"));
+				assertEquals(1L, receiver.getWarnings().stream().filter(warning -> warning.contains("Unable to queue")).count());
 				stalled.setSoTimeout(2000);
 				assertEquals(-1, stalled.getInputStream().read());
 			}
@@ -213,6 +218,9 @@ public class VoteReceiverLifecycleTest {
 		private boolean pauseProcessing;
 		private Set<String> servers = Set.of();
 		private ForwardServer target;
+		private Key signingKey;
+		private final LinkedBlockingQueue<Vote> votes = new LinkedBlockingQueue<>();
+		private final CountDownLatch forwardingRejected = new CountDownLatch(1);
 
 		private CapturingVoteReceiver() throws Exception {
 			super("127.0.0.1", 0);
@@ -254,7 +262,7 @@ public class VoteReceiverLifecycleTest {
 
 		@Override
 		public boolean isUseTokens() {
-			return false;
+			return signingKey != null;
 		}
 
 		@Override
@@ -265,6 +273,9 @@ public class VoteReceiverLifecycleTest {
 		@Override
 		public void logWarning(String warning) {
 			warnings.add(warning);
+			if (warning.contains("Unable to queue")) {
+				forwardingRejected.countDown();
+			}
 		}
 
 		@Override
@@ -310,7 +321,7 @@ public class VoteReceiverLifecycleTest {
 
 		@Override
 		public Map<String, Key> getTokens() {
-			return Collections.emptyMap();
+			return signingKey == null ? Collections.emptyMap() : Map.of("example.test", signingKey);
 		}
 
 		@Override
@@ -320,6 +331,7 @@ public class VoteReceiverLifecycleTest {
 
 		@Override
 		public void callEvent(Vote vote) {
+			votes.add(vote);
 		}
 	}
 }
