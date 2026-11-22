@@ -286,7 +286,7 @@ public class VoteForwarder {
 			try {
 				attempt.timer = deadlines.schedule(() -> expire(attempt), remaining(deadline), TimeUnit.NANOSECONDS);
 			} catch (Exception ex) {
-				finishAttempt(attempt);
+				finishAttempt(attempt, ex instanceof SocketTimeoutException);
 				throw ex;
 			}
 			return attempt;

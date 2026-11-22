@@ -658,6 +658,39 @@ public class VoteForwarderHandshakeTest {
 	}
 
 	@Test
+	public void expirationDuringSocketRegistrationIsCountedAndClosedOnce() throws Throwable {
+		var closes = new AtomicInteger();
+		var cutoff = new java.util.concurrent.atomic.AtomicLong();
+		var forwarder = forwarderWithSockets(null, () -> {
+			while (cutoff.get() - System.nanoTime() > 0) {
+				java.util.concurrent.locks.LockSupport.parkNanos(cutoff.get() - System.nanoTime());
+			}
+			return new Socket() {
+				@Override
+				public void close() throws IOException {
+					closes.incrementAndGet();
+					super.close();
+				}
+			};
+		});
+		Method register = VoteForwarder.class.getDeclaredMethod("registerAttempt", boolean.class, String.class, long.class);
+		register.setAccessible(true);
+		var expired = VoteForwarder.class.getDeclaredField("expiredAttempts");
+		expired.setAccessible(true);
+		var closer = VoteForwarder.class.getDeclaredField("closers");
+		closer.setAccessible(true);
+		try {
+			cutoff.set(System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500));
+			assertThrows(SocketTimeoutException.class, () -> call(register, forwarder, false, "runtime", cutoff.get()));
+		} finally {
+			stopForTest(forwarder);
+		}
+		assertTrue(((ThreadPoolExecutor) closer.get(forwarder)).awaitTermination(2, TimeUnit.SECONDS));
+		assertEquals(1L, expired.getLong(forwarder));
+		assertEquals(1, closes.get());
+	}
+
+	@Test
 	public void shutdownCannotOvertakeAReservedSocketBeforeRegistration() throws Exception {
 		var allocating = new CountDownLatch(1);
 		var release = new CountDownLatch(1);
