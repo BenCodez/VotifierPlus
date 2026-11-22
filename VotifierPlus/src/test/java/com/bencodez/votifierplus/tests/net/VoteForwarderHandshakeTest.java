@@ -543,7 +543,7 @@ public class VoteForwarderHandshakeTest {
 
 	@Test
 	public void normalCompletionReportsSuccessOnlyWhenItWinsBeforeExpiryOrStop() throws Throwable {
-		for (String winner : new String[] {"completion", "expiry", "stop"}) {
+		for (String winner : new String[] {"completion", "expiry", "worker-expiry", "stop"}) {
 			var writing = new CountDownLatch(1);
 			var release = new CountDownLatch(1);
 			var closes = new AtomicInteger();
@@ -581,7 +581,7 @@ public class VoteForwarderHandshakeTest {
 						public void flush() throws IOException {
 							writing.countDown();
 							try {
-								if (!release.await(3, TimeUnit.SECONDS)) {
+								if (!release.await(8, TimeUnit.SECONDS)) {
 									throw new IOException("test flush was not released");
 								}
 							} catch (InterruptedException ex) {
@@ -598,6 +598,22 @@ public class VoteForwarderHandshakeTest {
 					super.close();
 				}
 			});
+			var timerRelease = new CountDownLatch(1);
+			if (winner.equals("worker-expiry")) {
+				var timerEntered = new CountDownLatch(1);
+				var schedulerField = VoteForwarder.class.getDeclaredField("deadlines");
+				schedulerField.setAccessible(true);
+				var scheduler = (java.util.concurrent.ScheduledThreadPoolExecutor) schedulerField.get(forwarder);
+				scheduler.execute(() -> {
+					timerEntered.countDown();
+					try {
+						timerRelease.await(8, TimeUnit.SECONDS);
+					} catch (InterruptedException ex) {
+						Thread.currentThread().interrupt();
+					}
+				});
+				assertTrue(timerEntered.await(2, TimeUnit.SECONDS));
+			}
 			var sender = new FutureTask<Void>(() -> {
 				forwarder.forwardVote(new Vote("example.test", "TestVoter", "", "TestTimestamp"));
 				return null;
@@ -616,6 +632,8 @@ public class VoteForwarderHandshakeTest {
 						expire.setAccessible(true);
 						call(expire, forwarder, attempt);
 					}
+				} else if (winner.equals("worker-expiry")) {
+					Thread.sleep(5100);
 				} else if (winner.equals("stop")) {
 					stopForTest(forwarder);
 				}
@@ -627,7 +645,11 @@ public class VoteForwarderHandshakeTest {
 				assertTrue(((ThreadPoolExecutor) closerField.get(forwarder)).awaitTermination(2, TimeUnit.SECONDS));
 				assertEquals(1, closes.get());
 				assertEquals(winner.equals("completion") ? 1 : 0, successes.get());
+				var expired = VoteForwarder.class.getDeclaredField("expiredAttempts");
+				expired.setAccessible(true);
+				assertEquals(winner.endsWith("expiry") ? 1L : 0L, expired.getLong(forwarder));
 			} finally {
+				timerRelease.countDown();
 				release.countDown();
 				stopForTest(forwarder);
 				receiver.shutdown();
@@ -661,18 +683,22 @@ public class VoteForwarderHandshakeTest {
 		register.setAccessible(true);
 		var registration = new FutureTask<>(() -> register.invoke(forwarder, false, "runtime",
 				System.nanoTime() + TimeUnit.SECONDS.toNanos(4)));
-		var stopAttempted = new CountDownLatch(1);
 		var stopping = new FutureTask<Void>(() -> {
-			stopAttempted.countDown();
 			stopForTest(forwarder);
 			return null;
 		});
 		Thread.ofVirtual().start(registration);
 		try {
 			assertTrue(allocating.await(2, TimeUnit.SECONDS));
-			Thread.ofVirtual().start(stopping);
-			assertTrue(stopAttempted.await(2, TimeUnit.SECONDS));
-			assertThrows(TimeoutException.class, () -> stopping.get(100, TimeUnit.MILLISECONDS));
+			Thread stopper = Thread.ofPlatform().daemon().start(stopping);
+			long waitUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+			while (stopper.getState() != Thread.State.BLOCKED && System.nanoTime() < waitUntil) {
+				Thread.sleep(1);
+			}
+			assertEquals(Thread.State.BLOCKED, stopper.getState());
+			assertTrue(java.util.Arrays.stream(stopper.getStackTrace())
+					.anyMatch(frame -> frame.getClassName().equals(VoteForwarder.class.getName())
+							&& frame.getMethodName().equals("stop")));
 			release.countDown();
 			registration.get(2, TimeUnit.SECONDS);
 			stopping.get(2, TimeUnit.SECONDS);

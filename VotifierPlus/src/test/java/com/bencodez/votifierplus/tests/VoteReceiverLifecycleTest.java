@@ -353,17 +353,48 @@ public class VoteReceiverLifecycleTest {
 	@Test
 	public void admittedSocketCloseFailurePreventsRetirementConfirmation() throws Exception {
 		receiver = new CapturingVoteReceiver();
-		receiver.pauseProcessing = true;
 		var admitted = org.mockito.Mockito.mock(Socket.class);
-		org.mockito.Mockito.doThrow(new IOException("synthetic socket close failure")).when(admitted).close();
+		var reading = new CountDownLatch(1);
+		var release = new CountDownLatch(1);
+		var retirementClose = new CountDownLatch(1);
+		Thread retiringThread = Thread.currentThread();
+		var closed = new java.util.concurrent.atomic.AtomicBoolean();
+		org.mockito.Mockito.when(admitted.isClosed()).thenAnswer(invocation -> closed.get());
+		org.mockito.Mockito.when(admitted.getInetAddress()).thenReturn(InetAddress.getLoopbackAddress());
+		org.mockito.Mockito.when(admitted.getOutputStream()).thenReturn(new ByteArrayOutputStream());
+		org.mockito.Mockito.when(admitted.getInputStream()).thenReturn(new InputStream() {
+			@Override
+			public int read() throws IOException {
+				reading.countDown();
+				try {
+					release.await(4, TimeUnit.SECONDS);
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+				}
+				return -1;
+			}
+		});
+		org.mockito.Mockito.doAnswer(invocation -> {
+			if (Thread.currentThread() == retiringThread) {
+				retirementClose.countDown();
+				release.countDown();
+				throw new IOException("synthetic socket close failure");
+			}
+			closed.set(true);
+			return null;
+		}).when(admitted).close();
 		receiver.syntheticSocket = admitted;
 		receiver.start();
-		assertTrue(receiver.thirdAccept.await(2, TimeUnit.SECONDS));
-		receiver.shutdown();
-		receiver.join(2000);
-		assertFalse(receiver.isAlive());
-		assertFalse(receiver.isRetired());
-		org.mockito.Mockito.verify(admitted, org.mockito.Mockito.atLeastOnce()).close();
+		try {
+			assertTrue(reading.await(2, TimeUnit.SECONDS));
+			receiver.shutdown();
+			receiver.join(2000);
+			assertEquals(0, retirementClose.getCount());
+			assertFalse(receiver.isAlive());
+			assertFalse(receiver.isRetired());
+		} finally {
+			release.countDown();
+		}
 	}
 
 	@Test

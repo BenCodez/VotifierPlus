@@ -230,8 +230,9 @@ public class VoteForwarder {
 				output.flush();
 				boolean completed;
 				synchronized (lifecycleLock) {
-					completed = !stopped && !attempt.ended && deadline - System.nanoTime() > 0;
-					finishAttempt(attempt);
+					boolean expired = deadline - System.nanoTime() <= 0;
+					completed = !stopped && !attempt.ended && !expired;
+					finishAttempt(attempt, !stopped && expired);
 				}
 				if (completed) {
 					receiver.debug("Payload forwarded to " + VoteLogSafety.field(name) + " (" + payload.length + " bytes)");
@@ -248,7 +249,7 @@ public class VoteForwarder {
 			} finally {
 				if (attempt != null) {
 					synchronized (lifecycleLock) {
-						finishAttempt(attempt);
+						finishAttempt(attempt, !stopped && deadline - System.nanoTime() <= 0);
 						awaitClose(attempt, deadline);
 					}
 					if (attempt.closeRejected) {
@@ -294,20 +295,23 @@ public class VoteForwarder {
 
 	private void expire(Attempt attempt) {
 		synchronized (lifecycleLock) {
-			if (attempt.ended) {
-				return;
-			}
-			expiredAttempts++;
-			finishAttempt(attempt);
+			finishAttempt(attempt, true);
 		}
 	}
 
 	// The only terminal transition and close submission. Caller holds lifecycleLock.
 	private void finishAttempt(Attempt attempt) {
+		finishAttempt(attempt, false);
+	}
+
+	private void finishAttempt(Attempt attempt, boolean expired) {
 		if (attempt.ended) {
 			return;
 		}
 		attempt.ended = true;
+		if (expired) {
+			expiredAttempts++;
+		}
 		if (attempt.timer != null) {
 			attempt.timer.cancel(false);
 		}
