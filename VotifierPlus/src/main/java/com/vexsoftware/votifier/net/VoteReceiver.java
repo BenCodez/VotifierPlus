@@ -72,14 +72,24 @@ import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.util.function.IntSupplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import javax.crypto.Cipher;
 
@@ -97,6 +107,14 @@ public abstract class VoteReceiver extends Thread {
 	private ServerSocket server;
 
 	private volatile boolean running = true;
+	private final Object lifecycleLock = new Object();
+	private final Set<Socket> connections = new HashSet<>();
+	private final AtomicLong rejectedForwardingJobs = new AtomicLong();
+	private final CountDownLatch retirementComplete = new CountDownLatch(1);
+	private Thread retirementOwner;
+	private volatile boolean retirementCleanupComplete;
+	private volatile boolean connectionCloseFailed;
+	private static final int DRAIN_SECONDS = 3;
 
 	@Getter
 	private volatile VoteThrottleService throttleService;
@@ -115,50 +133,229 @@ public abstract class VoteReceiver extends Thread {
 		initialize();
 	}
 
-	public void initialize() throws Exception {
-		try {
-			server = new ServerSocket();
-			server.bind(new InetSocketAddress(host, port));
-			debug("Bound to " + server.getInetAddress().getHostAddress() + ":" + server.getLocalPort());
-		} catch (Exception ex) {
-			logSevere(
-					"Error initializing vote receiver. Please verify that the configured IP address and port are not already in use.");
-			ex.printStackTrace();
-			throw new Exception(ex);
+	/**
+	 * Binds a receiver using explicit per-listener settings. Start it with
+	 * {@link VoteReceiver#start()} and retire it with {@link VoteReceiver#shutdown()}.
+	 *
+	 * <p>The callback is invoked on a connection worker before forwarding and may
+	 * run concurrently for different votes. It should enqueue platform work on
+	 * the appropriate scheduler and return promptly. Treat the vote as read-only
+	 * because forwarding uses the same object. The adapter owns the lifecycle of
+	 * work it enqueues on its scheduler. The receiver can invoke the callback
+	 * for connections already admitted while shutdown drains the worker pool.
+	 * The adapter must gate and drain its scheduler work during disable.
+	 *
+	 * <p>The wire response acknowledges protocol acceptance before this
+	 * callback. Callback failures are logged and forwarding can still proceed.
+	 *
+	 * @param settings listener configuration and protocol policy
+	 * @param logger logger for the receiver
+	 * @param onVote callback for a parsed, accepted vote
+	 * @return bound, unstarted receiver
+	 * @throws Exception if the listener cannot bind
+	 */
+	public static VoteReceiver bind(Settings settings, Logger logger, Consumer<Vote> onVote) throws Exception {
+		return new ConfiguredReceiver(Objects.requireNonNull(settings), Objects.requireNonNull(logger),
+				Objects.requireNonNull(onVote));
+	}
+
+	/**
+	 * Configuration for one listener. Supply a new configuration and receiver
+	 * when changing policy. Token support controls the greeting, while disableV1
+	 * requires V2 authentication. An empty trusted-proxy set trusts no peer.
+	 */
+	public record Settings(String host, int port, String version, boolean tokenSupport, boolean disableV1,
+			KeyPair keyPair, Map<String, Key> tokens, Set<String> trustedProxyIps, ThrottleConfig throttle,
+			Map<String, ForwardServer> forwarding) {
+		public Settings {
+			Objects.requireNonNull(version);
+			if (!disableV1) {
+				Objects.requireNonNull(keyPair, "Legacy V1 requires an RSA key pair");
+			}
+			tokens = Map.copyOf(tokens);
+			trustedProxyIps = Set.copyOf(trustedProxyIps);
+			Map<String, ForwardServer> targets = new LinkedHashMap<>();
+			forwarding.forEach((name, target) -> targets.put(Objects.requireNonNull(name), copyTarget(target)));
+			forwarding = Collections.unmodifiableMap(targets);
+		}
+
+		@Override
+		public Map<String, ForwardServer> forwarding() {
+			Map<String, ForwardServer> targets = new LinkedHashMap<>();
+			forwarding.forEach((name, target) -> targets.put(name, copyTarget(target)));
+			return Collections.unmodifiableMap(targets);
+		}
+
+		@Override
+		public String toString() {
+			return "VoteReceiver.Settings";
 		}
 	}
 
-	public void shutdown() {
-		running = false;
+	private static ForwardServer copyTarget(ForwardServer target) {
+		return new ForwardServer(target.isEnabled(), target.getHost(), target.getPort(), target.getKey(),
+				target.getToken());
+	}
 
+
+	public void initialize() throws Exception {
+		synchronized (lifecycleLock) {
+			if (!running) {
+				throw new IllegalStateException("Receiver has been shut down");
+			}
+			if (server != null && !server.isClosed()) {
+				throw new IllegalStateException("Receiver already owns a listener");
+			}
+			ServerSocket next = new ServerSocket();
+			try {
+				next.bind(new InetSocketAddress(host, port));
+				debug("Bound to " + next.getInetAddress().getHostAddress() + ":" + next.getLocalPort());
+				server = next;
+			} catch (Exception ex) {
+				try {
+					next.close();
+				} catch (IOException closeFailure) {
+					ex.addSuppressed(closeFailure);
+				}
+				logSevere("Error initializing vote receiver. Please verify that the configured IP address and port are not already in use.");
+				ex.printStackTrace();
+				throw new Exception(ex);
+			}
+		}
+	}
+
+	@Override
+	public void start() {
+		synchronized (lifecycleLock) {
+			if (!running) {
+				throw new IllegalThreadStateException("Receiver has been shut down");
+			}
+			super.start();
+		}
+	}
+
+	/**
+	 * Returns whether shutdown cleanup completed and all receiver-owned work has
+	 * terminated. Platform scheduler work is outside this receiver's ownership.
+	 */
+	public final boolean isRetired() {
+		return retirementCleanupComplete && !connectionCloseFailed && server != null && server.isClosed() && !isAlive()
+				&& (connectionExecutor == null || connectionExecutor.isTerminated())
+				&& (forwardExecutor == null || forwardExecutor.isTerminated())
+				&& (voteForwarder == null || voteForwarder.isTerminated());
+	}
+
+	/**
+	 * Closes the listener and all admitted sockets, then waits for workers within
+	 * bounded drain windows. Platform-owned callbacks must return promptly.
+	 */
+	public void shutdown() {
+		boolean ownsRetirement;
+		synchronized (lifecycleLock) {
+			if (retirementOwner == Thread.currentThread()) {
+				return;
+			}
+			ownsRetirement = retirementOwner == null;
+			if (ownsRetirement) {
+				retirementOwner = Thread.currentThread();
+				running = false;
+			}
+		}
+		if (!ownsRetirement) {
+			awaitRetirement();
+			return;
+		}
+
+		try {
+			retirementCleanupComplete = retire();
+		} finally {
+			retirementComplete.countDown();
+		}
+	}
+
+	private boolean retire() {
+		if (voteForwarder != null) {
+			voteForwarder.sealDirectCalls();
+		}
+		List<Socket> sockets;
+		synchronized (lifecycleLock) {
+			sockets = List.copyOf(connections);
+			connections.clear();
+		}
+		boolean listenerClosed = false;
 		if (server != null) {
 			try {
 				server.close();
-			} catch (Exception ex) {
+				listenerClosed = server.isClosed();
+			} catch (IOException ex) {
 				debug(ex);
 			}
 		}
-
-		shutdownExecutor(connectionExecutor, "connection");
-		shutdownExecutor(forwardExecutor, "forward");
+		sockets.forEach(this::closeConnection);
+		try {
+			shutdownExecutor(connectionExecutor, "connection", null);
+		} finally {
+			try {
+				shutdownExecutor(forwardExecutor, "forward", () -> voteForwarder.stop());
+			} finally {
+				if (voteForwarder != null) {
+					voteForwarder.stop();
+				}
+			}
+			long rejected = rejectedForwardingJobs.get();
+			if (rejected != 0) {
+				logWarning("Forwarding queue rejections at receiver retirement: " + rejected);
+			}
+		}
+		return listenerClosed;
 	}
 
-	private void shutdownExecutor(ExecutorService executor, String name) {
+	private void awaitRetirement() {
+		try {
+			if (!retirementComplete.await(4L * DRAIN_SECONDS, TimeUnit.SECONDS)) {
+				logWarning("Timed out waiting for receiver retirement.");
+			}
+		} catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	boolean isStopping() {
+		return !running;
+	}
+
+	private void shutdownExecutor(ExecutorService executor, String name, IntSupplier cancelActive) {
 		if (executor == null) {
 			return;
 		}
 
 		executor.shutdown();
+		boolean interrupted = false;
 		try {
-			if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
-				executor.shutdownNow();
-				if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
+			try {
+				if (executor.awaitTermination(DRAIN_SECONDS, TimeUnit.SECONDS)) {
+					return;
+				}
+			} catch (InterruptedException ex) {
+				interrupted = true;
+			}
+			int discarded = executor.shutdownNow().size();
+			int socketCloseAttempts = cancelActive == null ? 0 : cancelActive.getAsInt();
+			if (cancelActive != null && (discarded != 0 || socketCloseAttempts != 0)) {
+				logWarning("Forced forwarding shutdown: discarded queued jobs=" + discarded
+						+ ", active socket close attempts=" + socketCloseAttempts);
+			}
+			try {
+				if (!executor.awaitTermination(DRAIN_SECONDS, TimeUnit.SECONDS)) {
 					logWarning("Unable to fully shut down " + name + " executor.");
 				}
+			} catch (InterruptedException ex) {
+				interrupted = true;
 			}
-		} catch (InterruptedException ex) {
-			executor.shutdownNow();
-			Thread.currentThread().interrupt();
+		} finally {
+			if (interrupted) {
+				Thread.currentThread().interrupt();
+			}
 		}
 	}
 
@@ -184,103 +381,130 @@ public abstract class VoteReceiver extends Thread {
 
 	@Override
 	public void run() {
-		throttleService = new VoteThrottleService(getThrottleConfig());
-		voteForwarder = new VoteForwarder(this);
-
-		if (isUseTokens() && !isDisableV1()) {
-			logWarning("TokenSupport is enabled, but legacy Votifier V1 votes are still accepted. "
-					+ "Set DisableV1: true to require token-authenticated V2 votes.");
+		try {
+			synchronized (lifecycleLock) {
+				if (!running) {
+					return;
+				}
+				throttleService = new VoteThrottleService(getThrottleConfig());
+				int forwardWorkers = getForwardWorkerCount();
+				voteForwarder = new VoteForwarder(this, forwardWorkers);
+				connectionExecutor = createExecutor(getConnectionWorkerCount(), getConnectionQueueCapacity(),
+						"Votifier-Connection-");
+				forwardExecutor = createExecutor(forwardWorkers, getForwardQueueCapacity(), "Votifier-Forwarder-");
+			}
+			if (isUseTokens() && !isDisableV1()) {
+				logWarning("TokenSupport is enabled, but legacy Votifier V1 votes are still accepted. "
+						+ "Set DisableV1: true to require token-authenticated V2 votes.");
+			}
+			VoteConnectionHandler handler = new VoteConnectionHandler(this, throttleService);
+			while (running) {
+				try {
+					submitConnection(acceptSocket(), handler);
+				} catch (SocketException ex) {
+					if (running) {
+						logWarning("Connection error while accepting vote socket: " + VoteLogSafety.exceptionType(ex));
+					}
+					if (server.isClosed()) {
+						break;
+					}
+				} catch (Exception ex) {
+					if (running) {
+						logWarning("Error accepting vote connection: " + VoteLogSafety.exceptionType(ex));
+					}
+				}
+			}
+		} finally {
+			if (running) {
+				shutdown();
+			}
 		}
+	}
 
-		int connectionWorkerCount = getConnectionWorkerCount();
-		connectionExecutor = new ThreadPoolExecutor(connectionWorkerCount, connectionWorkerCount, 0L,
-				TimeUnit.MILLISECONDS, new ArrayBlockingQueue<Runnable>(getConnectionQueueCapacity()),
+	private ThreadPoolExecutor createExecutor(int workers, int capacity, String threadPrefix) {
+		return new ThreadPoolExecutor(workers, workers, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(capacity),
 				new ThreadFactory() {
 					private int id = 1;
 
 					@Override
-					public Thread newThread(Runnable r) {
-						Thread thread = new Thread(r, "Votifier-Connection-" + id++);
+					public Thread newThread(Runnable work) {
+						Thread thread = new Thread(work, threadPrefix + id++);
 						thread.setDaemon(true);
 						return thread;
 					}
 				}, new ThreadPoolExecutor.AbortPolicy());
+	}
 
-		int forwardWorkerCount = getForwardWorkerCount();
-		forwardExecutor = new ThreadPoolExecutor(forwardWorkerCount, forwardWorkerCount, 0L, TimeUnit.MILLISECONDS,
-				new ArrayBlockingQueue<Runnable>(getForwardQueueCapacity()), new ThreadFactory() {
-					private int id = 1;
-
-					@Override
-					public Thread newThread(Runnable r) {
-						Thread thread = new Thread(r, "Votifier-Forwarder-" + id++);
-						thread.setDaemon(true);
-						return thread;
+	private void submitConnection(Socket socket, VoteConnectionHandler handler) throws SocketException {
+		long acceptedAtNanos = System.nanoTime();
+		boolean submitted = false;
+		try {
+			socket.setSoTimeout(5000);
+			synchronized (lifecycleLock) {
+				if (!running) {
+					return;
+				}
+				connections.add(socket);
+				try {
+					connectionExecutor.execute(() -> processConnection(socket, handler, acceptedAtNanos));
+					submitted = true;
+				} finally {
+					if (!submitted) {
+						connections.remove(socket);
 					}
-				}, new ThreadPoolExecutor.CallerRunsPolicy());
-
-		final VoteConnectionHandler handler = new VoteConnectionHandler(this, throttleService);
-
-		while (running) {
-			try {
-				final Socket socket = acceptSocket();
-				final long acceptedAtNanos = System.nanoTime();
-
-				try {
-					socket.setSoTimeout(5000);
-				} catch (SocketException ex) {
-					closeConnection(socket);
-					throw ex;
 				}
-
-				try {
-					connectionExecutor.execute(new Runnable() {
-						@Override
-						public void run() {
-							long queueTimeoutMillis = getConnectionQueueTimeoutMillis();
-							if (queueTimeoutMillis > 0 && System.nanoTime() - acceptedAtNanos > TimeUnit.MILLISECONDS
-									.toNanos(queueTimeoutMillis)) {
-								closeConnection(socket);
-								debug("Closed stale vote connection after it exceeded the connection queue deadline.");
-								return;
-							}
-
-							try {
-								Vote vote = handler.handle(socket);
-								if (vote != null) {
-									callEvent(vote);
-
-									final Vote forwardVote = vote;
-									forwardExecutor.execute(new Runnable() {
-										@Override
-										public void run() {
-											try {
-												voteForwarder.forwardVote(forwardVote);
-											} catch (Exception ex) {
-												logWarning("Error forwarding vote: " + VoteLogSafety.exceptionType(ex));
-											}
-										}
-									});
-								}
-							} catch (Exception ex) {
-								logWarning("Error processing vote connection: " + VoteLogSafety.exceptionType(ex));
-							}
-						}
-					});
-				} catch (RejectedExecutionException ex) {
-					closeConnection(socket);
-					debug("Rejected vote connection because the connection queue is full.");
-				}
-			} catch (SocketException ex) {
-				if (running) {
-					logWarning("Connection error while accepting vote socket: " + VoteLogSafety.exceptionType(ex));
-				}
-				if (server.isClosed()) {
-					running = false;
-				}
-			} catch (Exception ex) {
-				logWarning("Error accepting vote connection: " + VoteLogSafety.exceptionType(ex));
 			}
+		} catch (RejectedExecutionException ex) {
+			debug("Rejected vote connection because the connection queue is full.");
+		} finally {
+			if (!submitted) {
+				closeConnection(socket);
+			}
+		}
+	}
+
+	private void processConnection(Socket socket, VoteConnectionHandler handler, long acceptedAtNanos) {
+		try {
+			if (!running) {
+				return;
+			}
+			long queueTimeoutMillis = getConnectionQueueTimeoutMillis();
+			if (queueTimeoutMillis > 0
+					&& System.nanoTime() - acceptedAtNanos > TimeUnit.MILLISECONDS.toNanos(queueTimeoutMillis)) {
+				debug("Closed stale vote connection after it exceeded the connection queue deadline.");
+				return;
+			}
+			Vote vote = handler.handle(socket);
+			if (vote != null) {
+				callEvent(vote);
+				submitForward(vote);
+			}
+		} catch (Exception ex) {
+			logWarning("Error processing vote connection: " + VoteLogSafety.exceptionType(ex));
+		} finally {
+			closeConnection(socket);
+			synchronized (lifecycleLock) {
+				connections.remove(socket);
+			}
+		}
+	}
+
+	// Protocol OK and local delivery precede best-effort forwarding. A full
+	// queue can lose forwarding but must never make ingress do outbound work.
+	private void submitForward(Vote vote) {
+		try {
+			forwardExecutor.execute(() -> {
+				try {
+					voteForwarder.forwardQueuedVote(vote);
+				} catch (Exception ex) {
+					logWarning("Error forwarding vote: " + VoteLogSafety.exceptionType(ex));
+				}
+			});
+		} catch (RejectedExecutionException ex) {
+			long rejected = rejectedForwardingJobs.incrementAndGet();
+			throttleService.logWarning(this, "forward-queue",
+					"Unable to queue vote forwarding: forwarding executor is full or stopping. Total rejected jobs: "
+							+ rejected);
 		}
 	}
 
@@ -297,7 +521,11 @@ public abstract class VoteReceiver extends Thread {
 	private void closeConnection(Socket socket) {
 		try {
 			socket.close();
+			if (!socket.isClosed()) {
+				connectionCloseFailed = true;
+			}
 		} catch (IOException ex) {
+			connectionCloseFailed = true;
 			debug(ex);
 		}
 	}
@@ -357,4 +585,109 @@ public abstract class VoteReceiver extends Thread {
 	public String getChallenge() {
 		return com.vexsoftware.votifier.crypto.TokenUtil.newToken();
 	}
+	private static final class ConfiguredReceiver extends VoteReceiver {
+		private final Settings settings;
+		private final Logger logger;
+		private final Consumer<Vote> onVote;
+
+		private ConfiguredReceiver(Settings settings, Logger logger, Consumer<Vote> onVote) throws Exception {
+			super(settings.host(), settings.port());
+			this.settings = settings;
+			this.logger = logger;
+			this.onVote = onVote;
+		}
+
+		@Override
+		public boolean isUseTokens() {
+			return settings.tokenSupport();
+		}
+
+		@Override
+		public boolean isDisableV1() {
+			return settings.disableV1();
+		}
+
+		@Override
+		public ThrottleConfig getThrottleConfig() {
+			return settings.throttle();
+		}
+
+		@Override
+		public Set<String> getTrustedProxyIps() {
+			return settings.trustedProxyIps();
+		}
+
+		@Override
+		public void logWarning(String warning) {
+			logger.warning(warning);
+		}
+
+		@Override
+		public void logSevere(String message) {
+			// The superclass can report bind failures before the adapter is initialized.
+			Logger sink = logger == null ? Logger.getLogger(VoteReceiver.class.getName()) : logger;
+			sink.severe(message);
+		}
+
+		@Override
+		public void log(String message) {
+			logger.info(message);
+		}
+
+		@Override
+		public void debug(String message) {
+			if (logger != null) {
+				logger.fine(message);
+			}
+		}
+
+		@Override
+		public void debug(Exception exception) {
+			logger.log(Level.FINE, "Vote receiver operation failed: {0}", VoteLogSafety.exceptionType(exception));
+		}
+
+		@Override
+		public String getVersion() {
+			return settings.version();
+		}
+
+		@Override
+		public Set<String> getServers() {
+			return settings.forwarding.keySet();
+		}
+
+		@Override
+		public KeyPair getKeyPair() {
+			return settings.keyPair();
+		}
+
+		@Override
+		public Map<String, Key> getTokens() {
+			return settings.tokens();
+		}
+
+		@Override
+		public ForwardServer getServerData(String name) {
+			ForwardServer target = settings.forwarding.get(name);
+			return target == null ? null : copyTarget(target);
+		}
+
+		@Override
+		public void callEvent(Vote vote) {
+			try {
+				onVote.accept(vote);
+			} catch (RuntimeException failure) {
+				logger.warning("Vote callback failed: " + VoteLogSafety.exceptionType(failure));
+			}
+		}
+
+		@Override
+		public void initialize() throws Exception {
+			if (getServer() != null) {
+				throw new IllegalStateException("Bind a new receiver to replace this listener");
+			}
+			super.initialize();
+		}
+	}
+
 }
