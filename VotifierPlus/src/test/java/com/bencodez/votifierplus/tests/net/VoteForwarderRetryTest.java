@@ -34,6 +34,7 @@ import java.util.function.Supplier;
 
 import javax.crypto.KeyGenerator;
 import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 import org.junit.jupiter.api.Test;
 
@@ -328,6 +329,54 @@ class VoteForwarderRetryTest {
 					ForwardRetryConfig.DEFAULT.withOverrides(10, null, null)));
 			run.scheduler.runNext();
 			assertEquals(2, run.connects.size());
+			run.forward(testVote());
+			assertTrue(run.scheduler.getQueue().isEmpty());
+		}
+	}
+
+	@Test
+	void opaqueKeyDoesNotPreventLaterTargetsFromReceivingVote() throws Exception {
+		try (var run = new Forwarding(2, ForwardRetryConfig.DEFAULT)) {
+			Key opaque = mock(Key.class);
+			when(opaque.getEncoded()).thenThrow(new UnsupportedOperationException());
+			run.targets.put("opaque", new ForwardServer(true, "localhost", 2001, "", opaque));
+			run.addTarget("healthy", 2002);
+			run.unavailablePort = 2001;
+
+			run.forward(testVote());
+			assertEquals(List.of(2001, 2002), run.connects);
+			assertEquals(1, run.payloads.size());
+			assertTrue(run.scheduler.getQueue().isEmpty());
+
+			run.forwarder.forwardVote(testVote());
+			assertEquals(List.of(2001, 2002, 2001, 2002), run.connects);
+			assertEquals(2, run.payloads.size());
+		}
+	}
+
+	@Test
+	void tokenReplacementDuringIdentityReadCannotChangeInFlightCredential() throws Exception {
+		try (var run = new Forwarding(1, ForwardRetryConfig.DEFAULT)) {
+			run.addTarget("backend", 2001);
+			ForwardServer target = run.targets.get("backend");
+			Key original = target.getToken();
+			Key replacement = run.token();
+			target.setToken(new SecretKeySpec(original.getEncoded(), "HmacSHA256") {
+				@Override
+				public byte[] getEncoded() {
+					target.setToken(replacement);
+					return super.getEncoded();
+				}
+			});
+
+			run.forward(testVote());
+			var packet = JsonParser.parseString(run.payloads.getLast().toString(StandardCharsets.UTF_8)).getAsJsonObject();
+			byte[] payload = packet.get("payload").getAsString().getBytes(StandardCharsets.UTF_8);
+			Mac signer = Mac.getInstance("HmacSHA256");
+			signer.init(original);
+			assertEquals(Base64.getEncoder().encodeToString(signer.doFinal(payload)), packet.get("signature").getAsString());
+
+			run.unavailablePort = 2001;
 			run.forward(testVote());
 			assertTrue(run.scheduler.getQueue().isEmpty());
 		}

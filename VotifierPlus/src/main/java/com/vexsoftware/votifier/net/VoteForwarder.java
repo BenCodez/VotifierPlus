@@ -221,7 +221,10 @@ public class VoteForwarder {
 				return;
 			}
 			ForwardServer server = receiver.getServerData(name);
-			Destination destination = observeDestination(name, server);
+			if (!direct) {
+				server = captureServer(server);
+			}
+			Destination destination = direct ? null : observeDestination(name, server);
 			if (server == null || !server.isEnabled()) {
 				receiver.debug("Skipping disabled or missing forward server: " + VoteLogSafety.field(name));
 				continue;
@@ -237,8 +240,13 @@ public class VoteForwarder {
 		}
 	}
 
+	private static ForwardServer captureServer(ForwardServer server) {
+		return server == null ? null : new ForwardServer(server.isEnabled(), server.getHost(), server.getPort(),
+				server.getKey(), server.getToken(), server.getRetryConfig());
+	}
+
 	private Destination observeDestination(String name, ForwardServer server) {
-		Destination destination = destinationOf(server);
+		Destination destination = destinationOf(name, server);
 		synchronized (lifecycleLock) {
 			if (!Objects.equals(destination, previousSuccesses.get(name))) {
 				previousSuccesses.remove(name);
@@ -247,29 +255,30 @@ public class VoteForwarder {
 		return destination;
 	}
 
-	private Destination destinationOf(ForwardServer server) {
+	private Destination destinationOf(String name, ForwardServer server) {
 		if (server == null || !server.isEnabled()) {
 			return null;
 		}
-		boolean tokenMode = server.isUseTokens();
-		String rsaKey = server.getKey();
-		byte[] credential = tokenMode ? server.getToken().getEncoded()
-				: rsaKey == null ? null : rsaKey.getBytes(StandardCharsets.UTF_8);
-		if (credential == null) {
-			return null;
-		}
 		try {
+			boolean tokenMode = server.isUseTokens();
+			String rsaKey = server.getKey();
+			byte[] credential = tokenMode ? server.getToken().getEncoded()
+					: rsaKey == null ? null : rsaKey.getBytes(StandardCharsets.UTF_8);
+			if (credential == null) {
+				return null;
+			}
 			byte[] digest = MessageDigest.getInstance("SHA-256").digest(credential);
 			ForwardRetryConfig policy = server.getRetryConfig() == null ? retryConfig : server.getRetryConfig();
 			return new Destination(server.getHost(), server.getPort(), tokenMode, Base64.getEncoder().encodeToString(digest), policy);
-		} catch (NoSuchAlgorithmException ex) {
-			throw new IllegalStateException("SHA-256 unavailable", ex);
+		} catch (RuntimeException | NoSuchAlgorithmException ex) {
+			logFailure("retry-identity|" + name, "Unable to establish forwarding retry identity: " + VoteLogSafety.exceptionType(ex));
+			return null;
 		}
 	}
 
 	private void rememberSuccess(String name, Destination destination) {
 		// Read the effective target again in case configuration changed during the send.
-		if (receiver.getServers().contains(name) && destination.equals(destinationOf(receiver.getServerData(name)))) {
+		if (receiver.getServers().contains(name) && destination.equals(destinationOf(name, captureServer(receiver.getServerData(name))))) {
 			synchronized (lifecycleLock) {
 				if (!retries.isShutdown()) {
 					previousSuccesses.put(name, destination);
@@ -316,7 +325,8 @@ public class VoteForwarder {
 		Long failedAt = null;
 		try {
 			if (!retries.isShutdown() && !receiver.isStopping() && retryTimeLeft(retry) > 0) {
-				ForwardServer server = receiver.getServers().contains(retry.name()) ? receiver.getServerData(retry.name()) : null;
+				ForwardServer server = receiver.getServers().contains(retry.name())
+						? captureServer(receiver.getServerData(retry.name())) : null;
 				Destination destination = observeDestination(retry.name(), server);
 				boolean eligible;
 				synchronized (lifecycleLock) {
