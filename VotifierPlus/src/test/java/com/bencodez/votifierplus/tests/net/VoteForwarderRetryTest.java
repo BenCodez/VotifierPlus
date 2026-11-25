@@ -22,6 +22,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -129,7 +131,7 @@ class VoteForwarderRetryTest {
 		try (var run = new Forwarding(2)) {
 			run.addTarget("backend", 2001);
 			run.unavailablePort = 2001;
-			try (var senders = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+			try (var senders = Executors.newFixedThreadPool(2)) {
 				var first = senders.submit(() -> { run.forward(testVote()); return null; });
 				var second = senders.submit(() -> { run.forward(testVote()); return null; });
 				first.get(5, TimeUnit.SECONDS);
@@ -142,6 +144,43 @@ class VoteForwarderRetryTest {
 			assertEquals(2, run.writeCalls);
 			assertEquals(4, run.connects.size());
 			assertTrue(run.scheduler.getQueue().isEmpty());
+		}
+	}
+
+	@Test
+	void retriesInitialAndRepeatedAddressResolutionTimeout() throws Exception {
+		try (var run = new Forwarding(1)) {
+			run.addTarget("backend", 2001);
+			run.slowResolution = true;
+			run.forward(testVote());
+			run.scheduler.runNext();
+			assertEquals(List.of(15L, 15L), run.scheduler.delays);
+			assertTrue(run.connects.isEmpty());
+
+			run.slowResolution = false;
+			run.scheduler.runNext();
+			assertEquals(List.of(2001), run.connects);
+			assertEquals(1, run.writeCalls);
+			assertTrue(run.scheduler.getQueue().isEmpty());
+		}
+	}
+
+	@Test
+	void retirementClosesActiveRetrySocketDuringDrain() throws Exception {
+		try (var run = new Forwarding(1); var worker = Executors.newSingleThreadExecutor()) {
+			run.addTarget("backend", 2001);
+			run.unavailablePort = 2001;
+			run.forward(testVote());
+
+			run.unavailablePort = -1;
+			run.blockWrite = true;
+			var retry = worker.submit(run.scheduler::runNext);
+			assertTrue(run.writeStarted.await(3, TimeUnit.SECONDS));
+			run.retire();
+			assertTrue(run.retrySocketClosed.await(3, TimeUnit.SECONDS));
+			retry.get(3, TimeUnit.SECONDS);
+			assertTrue(run.scheduler.getQueue().isEmpty());
+			assertTrue(run.payloads.isEmpty());
 		}
 	}
 
@@ -179,6 +218,10 @@ class VoteForwarderRetryTest {
 		int unavailablePort = -1;
 		int writeCalls;
 		boolean failWrite;
+		boolean blockWrite;
+		volatile boolean slowResolution;
+		final CountDownLatch writeStarted = new CountDownLatch(1);
+		final CountDownLatch retrySocketClosed = new CountDownLatch(1);
 		String greeting = "VOTIFIER 2 test-challenge";
 
 		Forwarding(int capacity) throws Exception {
@@ -190,8 +233,16 @@ class VoteForwarderRetryTest {
 			var constructor = VoteForwarder.class.getDeclaredConstructor(VoteReceiver.class, int.class,
 					BiFunction.class, Supplier.class, ScheduledThreadPoolExecutor.class);
 			constructor.setAccessible(true);
-			BiFunction<String, Integer, InetSocketAddress> resolver =
-					(host, port) -> new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port);
+			BiFunction<String, Integer, InetSocketAddress> resolver = (host, port) -> {
+				if (slowResolution) {
+					try {
+						TimeUnit.SECONDS.sleep(20);
+					} catch (InterruptedException ex) {
+						Thread.currentThread().interrupt();
+					}
+				}
+				return new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port);
+			};
 			forwarder = constructor.newInstance(receiver, 2, resolver, (Supplier<Socket>) this::socket, scheduler);
 		}
 
@@ -244,11 +295,31 @@ class VoteForwarderRetryTest {
 				}
 
 				@Override
+				public synchronized void close() throws IOException {
+					super.close();
+					if (blockWrite) {
+						retrySocketClosed.countDown();
+					}
+				}
+
+				@Override
 				public OutputStream getOutputStream() {
 					return new OutputStream() {
 						@Override
 						public void write(byte[] bytes) throws IOException {
 							writeCalls++;
+							if (blockWrite) {
+								writeStarted.countDown();
+								try {
+									if (!retrySocketClosed.await(4, TimeUnit.SECONDS)) {
+										throw new AssertionError("Retry socket was not closed during retirement");
+									}
+								} catch (InterruptedException ex) {
+									Thread.currentThread().interrupt();
+									throw new AssertionError(ex);
+								}
+								throw new IOException("Socket closed");
+							}
 							if (failWrite) {
 								throw new IOException();
 							}

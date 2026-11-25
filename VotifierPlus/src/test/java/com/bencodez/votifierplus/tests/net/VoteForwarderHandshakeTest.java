@@ -397,16 +397,15 @@ public class VoteForwarderHandshakeTest {
 				}
 			};
 		});
-		Method register = VoteForwarder.class.getDeclaredMethod("registerAttempt", boolean.class, String.class, long.class);
-		register.setAccessible(true);
+		Method register = attemptRegistration();
 		Method terminated = VoteForwarder.class.getDeclaredMethod("isTerminated");
 		terminated.setAccessible(true);
 		try {
-			call(register, forwarder, true, "direct", System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200));
+			call(register, forwarder, origin(register, "DIRECT"), "direct", System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200));
 			assertTrue(blocked.await(2, TimeUnit.SECONDS));
-			assertThrows(RejectedExecutionException.class, () -> call(register, forwarder, true, "direct",
+			assertThrows(RejectedExecutionException.class, () -> call(register, forwarder, origin(register, "DIRECT"), "direct",
 					System.nanoTime() + TimeUnit.SECONDS.toNanos(1)));
-			call(register, forwarder, false, "runtime", System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200));
+			call(register, forwarder, origin(register, "INITIAL"), "runtime", System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200));
 			assertTrue(fastClosed.await(2, TimeUnit.SECONDS));
 			stopForTest(forwarder);
 			assertFalse((boolean) call(terminated, forwarder));
@@ -509,12 +508,11 @@ public class VoteForwarderHandshakeTest {
 				throw new IOException("synthetic close failure");
 			}
 		});
-		Method register = VoteForwarder.class.getDeclaredMethod("registerAttempt", boolean.class, String.class, long.class);
-		register.setAccessible(true);
+		Method register = attemptRegistration();
 		Method terminated = VoteForwarder.class.getDeclaredMethod("isTerminated");
 		terminated.setAccessible(true);
 		try {
-			Object attempt = call(register, forwarder, true, "test", System.nanoTime() + TimeUnit.SECONDS.toNanos(4));
+			Object attempt = call(register, forwarder, origin(register, "DIRECT"), "test", System.nanoTime() + TimeUnit.SECONDS.toNanos(4));
 			Method expire = VoteForwarder.class.getDeclaredMethod("expire", attempt.getClass());
 			expire.setAccessible(true);
 			var release = new CountDownLatch(1);
@@ -673,15 +671,14 @@ public class VoteForwarderHandshakeTest {
 				}
 			};
 		});
-		Method register = VoteForwarder.class.getDeclaredMethod("registerAttempt", boolean.class, String.class, long.class);
-		register.setAccessible(true);
+		Method register = attemptRegistration();
 		var expired = VoteForwarder.class.getDeclaredField("expiredAttempts");
 		expired.setAccessible(true);
 		var closer = VoteForwarder.class.getDeclaredField("closers");
 		closer.setAccessible(true);
 		try {
 			cutoff.set(System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500));
-			assertThrows(SocketTimeoutException.class, () -> call(register, forwarder, false, "runtime", cutoff.get()));
+			assertThrows(SocketTimeoutException.class, () -> call(register, forwarder, origin(register, "INITIAL"), "runtime", cutoff.get()));
 		} finally {
 			stopForTest(forwarder);
 		}
@@ -712,9 +709,8 @@ public class VoteForwarderHandshakeTest {
 				}
 			};
 		});
-		Method register = VoteForwarder.class.getDeclaredMethod("registerAttempt", boolean.class, String.class, long.class);
-		register.setAccessible(true);
-		var registration = new FutureTask<>(() -> register.invoke(forwarder, false, "runtime",
+		Method register = attemptRegistration();
+		var registration = new FutureTask<>(() -> register.invoke(forwarder, origin(register, "INITIAL"), "runtime",
 				System.nanoTime() + TimeUnit.SECONDS.toNanos(4)));
 		var stopping = new FutureTask<Void>(() -> {
 			stopForTest(forwarder);
@@ -741,6 +737,22 @@ public class VoteForwarderHandshakeTest {
 			release.countDown();
 			stopForTest(forwarder);
 		}
+	}
+
+	private static Method attemptRegistration() throws ReflectiveOperationException {
+		Class<?> origin = Class.forName(VoteForwarder.class.getName() + "$Origin");
+		Method method = VoteForwarder.class.getDeclaredMethod("registerAttempt", origin, String.class, long.class);
+		method.setAccessible(true);
+		return method;
+	}
+
+	private static Object origin(Method method, String name) {
+		for (Object constant : method.getParameterTypes()[0].getEnumConstants()) {
+			if (((Enum<?>) constant).name().equals(name)) {
+				return constant;
+			}
+		}
+		throw new AssertionError("Unknown forwarding origin: " + name);
 	}
 
 	private static VoteForwarder forwarderWithSockets(VoteReceiver receiver, Supplier<Socket> sockets) throws Exception {

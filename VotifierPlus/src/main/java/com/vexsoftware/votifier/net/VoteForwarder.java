@@ -23,6 +23,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Supplier;
 import java.util.function.BiFunction;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import javax.crypto.Mac;
 
@@ -74,18 +75,22 @@ public class VoteForwarder {
 	private boolean directSealed;
 	private long expiredAttempts;
 
+	private enum Origin {
+		DIRECT, INITIAL, RETRY
+	}
+
 	private static final class Attempt {
 		final Socket socket;
-		final boolean direct;
+		final Origin origin;
 		final String name;
 		ScheduledFuture<?> timer;
 		boolean ended;
 		boolean closeFinished;
 		boolean closeRejected;
 
-		Attempt(Socket socket, boolean direct, String name) {
+		Attempt(Socket socket, Origin origin, String name) {
 			this.socket = socket;
-			this.direct = direct;
+			this.origin = origin;
 			this.name = name;
 		}
 	}
@@ -195,7 +200,7 @@ public class VoteForwarder {
 				receiver.debug("Skipping disabled or missing forward server: " + VoteLogSafety.field(name));
 				continue;
 			}
-			boolean retryable = send(snapshot, name, server, direct);
+			boolean retryable = send(snapshot, name, server, direct ? Origin.DIRECT : Origin.INITIAL);
 			if (retryable && !direct) {
 				queueRetry(new Retry(name, server.getHost(), server.getPort(), server.isUseTokens(), snapshot));
 			}
@@ -227,7 +232,7 @@ public class VoteForwarder {
 			if (!retries.isShutdown() && !receiver.isStopping() && receiver.getServers().contains(retry.name())) {
 				ForwardServer server = receiver.getServerData(retry.name());
 				if (retry.matches(server)) {
-					retryable = send(retry.vote(), retry.name(), server, false);
+					retryable = send(retry.vote(), retry.name(), server, Origin.RETRY);
 				}
 			}
 		} catch (RuntimeException ex) {
@@ -244,14 +249,14 @@ public class VoteForwarder {
 	}
 
 	// True means another attempt is safe. Neither protocol acknowledges delivery.
-	private boolean send(Vote vote, String name, ForwardServer server, boolean direct) {
+	private boolean send(Vote vote, String name, ForwardServer server, Origin origin) {
 		receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + server.isUseTokens());
 		long deadline = deadlineAfter(ATTEMPT_TIMEOUT_MILLIS);
 		Attempt attempt = null;
 		boolean preparingPayload = false;
 		boolean writing = false;
 		try {
-			attempt = registerAttempt(direct, name, deadline);
+			attempt = registerAttempt(origin, name, deadline);
 			Socket socket = attempt.socket;
 			InetSocketAddress address = resolve(server, deadline);
 			long connectDeadline = limitedDeadline(deadline, CONNECT_TIMEOUT_MILLIS);
@@ -303,7 +308,13 @@ public class VoteForwarder {
 			preparingPayload = false;
 			remaining(deadline);
 			var output = socket.getOutputStream();
-			writing = true;
+			synchronized (lifecycleLock) {
+				remaining(deadline);
+				if (attempt.ended) {
+					throw new IOException("Forwarding attempt already ended");
+				}
+				writing = true;
+			}
 			output.write(payload);
 			output.flush();
 			boolean completed;
@@ -323,8 +334,9 @@ public class VoteForwarder {
 			if (ex instanceof InterruptedException) {
 				Thread.currentThread().interrupt();
 			}
-			return ex instanceof IOException && !preparingPayload && !writing
-					&& !Thread.currentThread().isInterrupted();
+			// DNS waits signal their deadline via Future.get's TimeoutException.
+			return (ex instanceof IOException || ex instanceof TimeoutException)
+					&& !preparingPayload && !writing && !Thread.currentThread().isInterrupted();
 		} finally {
 			if (attempt != null) {
 				synchronized (lifecycleLock) {
@@ -339,13 +351,14 @@ public class VoteForwarder {
 		return false;
 	}
 
-	private Attempt registerAttempt(boolean direct, String name, long deadline) throws Exception {
+	private Attempt registerAttempt(Origin origin, String name, long deadline) throws Exception {
+		boolean direct = origin == Origin.DIRECT;
 		synchronized (lifecycleLock) {
-			while (!stopped && !direct && runtimeTargets == workers) {
+			while (!attemptAdmissionClosed(origin) && !direct && runtimeTargets == workers) {
 				TimeUnit.NANOSECONDS.timedWait(lifecycleLock, remaining(deadline));
 			}
 			remaining(deadline);
-			if (stopped || (direct && directTarget)) {
+			if (attemptAdmissionClosed(origin) || (direct && directTarget)) {
 				throw new RejectedExecutionException("Forwarding socket capacity unavailable");
 			}
 			if (direct) {
@@ -360,7 +373,7 @@ public class VoteForwarder {
 				releaseTarget(direct);
 				throw ex;
 			}
-			var attempt = new Attempt(socket, direct, name);
+			var attempt = new Attempt(socket, origin, name);
 			attempts.add(attempt);
 			try {
 				attempt.timer = deadlines.schedule(() -> expire(attempt), remaining(deadline), TimeUnit.NANOSECONDS);
@@ -370,6 +383,11 @@ public class VoteForwarder {
 			}
 			return attempt;
 		}
+	}
+
+	// Caller holds lifecycleLock.
+	private boolean attemptAdmissionClosed(Origin origin) {
+		return stopped || (origin == Origin.RETRY && retries.isShutdown());
 	}
 
 	private void expire(Attempt attempt) {
@@ -412,7 +430,7 @@ public class VoteForwarder {
 			synchronized (lifecycleLock) {
 				attempt.closeFinished = true;
 				attempts.remove(attempt);
-				releaseTarget(attempt.direct);
+				releaseTarget(attempt.origin == Origin.DIRECT);
 			}
 		} catch (Exception ex) {
 			synchronized (lifecycleLock) {
@@ -472,10 +490,17 @@ public class VoteForwarder {
 		}
 	}
 
+	// Stop direct calls and retries before the receiver drains initial forwarding.
 	void sealDirectCalls() {
 		synchronized (lifecycleLock) {
 			directSealed = true;
 			pendingRetries -= retries.shutdownNow().size();
+			for (Attempt attempt : attempts) {
+				if (attempt.origin == Origin.RETRY) {
+					finishAttempt(attempt);
+				}
+			}
+			lifecycleLock.notifyAll();
 		}
 	}
 
