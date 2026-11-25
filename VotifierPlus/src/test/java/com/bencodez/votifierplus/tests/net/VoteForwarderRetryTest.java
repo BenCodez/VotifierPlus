@@ -410,6 +410,30 @@ class VoteForwarderRetryTest {
 		}
 	}
 
+	@Test
+	void successDuringCleanupDoesNotRetroactivelyQualifyEarlierFailure() throws Exception {
+		try (var run = new Forwarding(2, ForwardRetryConfig.DEFAULT); var workers = Executors.newSingleThreadExecutor()) {
+			run.addTarget("backend", 2001);
+			run.unavailablePort = 2001;
+			run.holdNextClose = true;
+			var earlier = workers.submit(() -> { run.forward(testVote()); return null; });
+			try {
+				assertTrue(run.closeStarted.await(3, TimeUnit.SECONDS));
+				run.unavailablePort = -1;
+				run.forward(testVote());
+				assertEquals(1, run.payloads.size());
+			} finally {
+				run.releaseClose.countDown();
+			}
+			earlier.get(3, TimeUnit.SECONDS);
+			assertTrue(run.scheduler.getQueue().isEmpty());
+
+			run.unavailablePort = 2001;
+			run.forward(testVote());
+			assertEquals(List.of(60L), run.scheduler.delays);
+		}
+	}
+
 	private static Vote testVote() {
 		return new Vote("example.test", "TestVoter", "192.0.2.10", "test-time");
 	}
@@ -467,6 +491,9 @@ class VoteForwarderRetryTest {
 		int writeCalls;
 		boolean failWrite;
 		boolean blockWrite;
+		boolean holdNextClose;
+		final CountDownLatch closeStarted = new CountDownLatch(1);
+		final CountDownLatch releaseClose = new CountDownLatch(1);
 		volatile boolean slowResolution;
 		final CountDownLatch writeStarted = new CountDownLatch(1);
 		final CountDownLatch retrySocketClosed = new CountDownLatch(1);
@@ -535,6 +562,8 @@ class VoteForwarderRetryTest {
 		}
 
 		private Socket socket() {
+			boolean holdClose = holdNextClose;
+			holdNextClose = false;
 			return new Socket() {
 				@Override
 				public void connect(SocketAddress address, int timeout) throws IOException {
@@ -552,6 +581,17 @@ class VoteForwarderRetryTest {
 
 				@Override
 				public synchronized void close() throws IOException {
+					if (holdClose) {
+						closeStarted.countDown();
+						try {
+							if (!releaseClose.await(4, TimeUnit.SECONDS)) {
+								throw new IOException("Test did not release socket cleanup");
+							}
+						} catch (InterruptedException ex) {
+							Thread.currentThread().interrupt();
+							throw new IOException(ex);
+						}
+					}
 					super.close();
 					if (blockWrite) {
 						retrySocketClosed.countDown();

@@ -83,11 +83,6 @@ public class VoteForwarder {
 
 	private record Retry(String name, Destination destination, Vote vote, long failedAt) {}
 
-	private record SendResult(boolean transportSuccess, Long failedAt) {
-		private static final SendResult SUCCESS = new SendResult(true, null);
-		private static final SendResult TERMINAL = new SendResult(false, null);
-	}
-
 	private final ThreadPoolExecutor closers;
 	private final int workers;
 	private final Supplier<Socket> socketFactory;
@@ -241,13 +236,10 @@ public class VoteForwarder {
 			if (credentials == null) {
 				continue;
 			}
-			SendResult result = send(snapshot, name, server, credentials, direct ? Origin.DIRECT : Origin.INITIAL,
+			Long failedAt = send(snapshot, name, server, credentials, destination, direct ? Origin.DIRECT : Origin.INITIAL,
 					deadlineAfter(ATTEMPT_TIMEOUT_MILLIS));
-			if (!direct && result.transportSuccess() && destination != null
-					&& destination.policy().requirePreviousSuccessBeforeRetry()) {
-				rememberSuccess(name, destination);
-			} else if (!direct && result.failedAt() != null && destination != null) {
-				queueRetry(new Retry(name, destination, snapshot, result.failedAt()));
+			if (failedAt != null && destination != null) {
+				queueRetry(new Retry(name, destination, snapshot, failedAt));
 			}
 		}
 	}
@@ -305,8 +297,12 @@ public class VoteForwarder {
 	}
 
 	private boolean hasRequiredSuccess(Retry retry) {
-		return !retry.destination().policy().requirePreviousSuccessBeforeRetry()
-				|| retry.destination().equals(previousSuccesses.get(retry.name()));
+		return hasRequiredSuccess(retry.name(), retry.destination());
+	}
+
+	private boolean hasRequiredSuccess(String name, Destination destination) {
+		return !destination.policy().requirePreviousSuccessBeforeRetry()
+				|| destination.equals(previousSuccesses.get(name));
 	}
 
 	private void queueRetry(Retry retry) {
@@ -354,7 +350,7 @@ public class VoteForwarder {
 				long timeLeft = retryTimeLeft(retry);
 				if (eligible && timeLeft > 0) {
 					long deadline = attemptStart + Math.min(timeLeft, TimeUnit.MILLISECONDS.toNanos(ATTEMPT_TIMEOUT_MILLIS));
-					failedAt = send(retry.vote(), retry.name(), server, credentials, Origin.RETRY, deadline).failedAt();
+					failedAt = send(retry.vote(), retry.name(), server, credentials, destination, Origin.RETRY, deadline);
 				}
 			}
 		} catch (RuntimeException ex) {
@@ -370,7 +366,8 @@ public class VoteForwarder {
 		}
 	}
 
-	private SendResult send(Vote vote, String name, ForwardServer server, Credentials credentials, Origin origin, long deadline) {
+	private Long send(Vote vote, String name, ForwardServer server, Credentials credentials, Destination destination,
+			Origin origin, long deadline) {
 		receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + credentials.tokenMode());
 		Attempt attempt = null;
 		boolean preparingPayload = false;
@@ -444,13 +441,20 @@ public class VoteForwarder {
 				finishAttempt(attempt, !stopped && expired);
 			}
 			if (completed) {
+				if (origin == Origin.INITIAL && destination != null && destination.policy().requirePreviousSuccessBeforeRetry()) {
+					rememberSuccess(name, destination);
+				}
 				receiver.debug("Payload forwarded to " + VoteLogSafety.field(name) + " (" + payload.length + " bytes)");
-				return SendResult.SUCCESS;
 			} else {
 				logFailure("target|" + name, "Forwarding attempt ended before completion: " + VoteLogSafety.field(name));
 			}
 		} catch (Exception ex) {
-			long failedAt = retryClock.getAsLong();
+			long failedAt;
+			boolean eligible;
+			synchronized (lifecycleLock) {
+				failedAt = retryClock.getAsLong();
+				eligible = destination != null && hasRequiredSuccess(name, destination);
+			}
 			logFailure("target|" + name, "Failed to forward vote to " + VoteLogSafety.field(name) + ": "
 					+ VoteLogSafety.exceptionType(ex));
 			if (ex instanceof InterruptedException) {
@@ -458,8 +462,8 @@ public class VoteForwarder {
 			}
 			// DNS waits signal their deadline via Future.get's TimeoutException.
 			return (ex instanceof IOException || ex instanceof TimeoutException)
-					&& !preparingPayload && !writing && !Thread.currentThread().isInterrupted()
-					? new SendResult(false, failedAt) : SendResult.TERMINAL;
+					&& !preparingPayload && !writing && !Thread.currentThread().isInterrupted() && eligible
+					? failedAt : null;
 		} finally {
 			if (attempt != null) {
 				synchronized (lifecycleLock) {
@@ -471,7 +475,7 @@ public class VoteForwarder {
 				}
 			}
 		}
-		return SendResult.TERMINAL;
+		return null;
 	}
 
 	private Attempt registerAttempt(Origin origin, String name, long deadline) throws Exception {
