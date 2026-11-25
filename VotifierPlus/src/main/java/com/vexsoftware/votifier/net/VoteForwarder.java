@@ -13,6 +13,7 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Map;
+import java.security.Key;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
@@ -67,6 +68,16 @@ public class VoteForwarder {
 	private final LongSupplier retryClock;
 	private final Map<String, Destination> previousSuccesses = new HashMap<>();
 	private int pendingRetries;
+
+	private record Credentials(boolean tokenMode, Key token) {
+		private static Credentials capture(ForwardServer server) {
+			if (server == null || !server.isEnabled()) {
+				return null;
+			}
+			boolean tokenMode = server.isUseTokens();
+			return new Credentials(tokenMode, tokenMode ? server.getToken() : null);
+		}
+	}
 
 	private record Destination(String host, int port, boolean tokenMode, String fingerprint, ForwardRetryConfig policy) {}
 
@@ -221,15 +232,16 @@ public class VoteForwarder {
 				return;
 			}
 			ForwardServer server = receiver.getServerData(name);
-			if (!direct) {
-				server = captureServer(server);
-			}
-			Destination destination = direct ? null : observeDestination(name, server);
+			Credentials credentials = captureCredentials(name, server);
+			Destination destination = direct ? null : observeDestination(name, server, credentials);
 			if (server == null || !server.isEnabled()) {
 				receiver.debug("Skipping disabled or missing forward server: " + VoteLogSafety.field(name));
 				continue;
 			}
-			SendResult result = send(snapshot, name, server, direct ? Origin.DIRECT : Origin.INITIAL,
+			if (credentials == null) {
+				continue;
+			}
+			SendResult result = send(snapshot, name, server, credentials, direct ? Origin.DIRECT : Origin.INITIAL,
 					deadlineAfter(ATTEMPT_TIMEOUT_MILLIS));
 			if (!direct && result.transportSuccess() && destination != null
 					&& destination.policy().requirePreviousSuccessBeforeRetry()) {
@@ -240,13 +252,17 @@ public class VoteForwarder {
 		}
 	}
 
-	private static ForwardServer captureServer(ForwardServer server) {
-		return server == null ? null : new ForwardServer(server.isEnabled(), server.getHost(), server.getPort(),
-				server.getKey(), server.getToken(), server.getRetryConfig());
+	private Credentials captureCredentials(String name, ForwardServer server) {
+		try {
+			return Credentials.capture(server);
+		} catch (RuntimeException ex) {
+			logFailure("retry-identity|" + name, "Unable to read forwarding credentials: " + VoteLogSafety.exceptionType(ex));
+			return null;
+		}
 	}
 
-	private Destination observeDestination(String name, ForwardServer server) {
-		Destination destination = destinationOf(name, server);
+	private Destination observeDestination(String name, ForwardServer server, Credentials credentials) {
+		Destination destination = destinationOf(name, server, credentials);
 		synchronized (lifecycleLock) {
 			if (!Objects.equals(destination, previousSuccesses.get(name))) {
 				previousSuccesses.remove(name);
@@ -255,14 +271,14 @@ public class VoteForwarder {
 		return destination;
 	}
 
-	private Destination destinationOf(String name, ForwardServer server) {
-		if (server == null || !server.isEnabled()) {
+	private Destination destinationOf(String name, ForwardServer server, Credentials credentials) {
+		if (credentials == null) {
 			return null;
 		}
 		try {
-			boolean tokenMode = server.isUseTokens();
+			boolean tokenMode = credentials.tokenMode();
 			String rsaKey = server.getKey();
-			byte[] credential = tokenMode ? server.getToken().getEncoded()
+			byte[] credential = tokenMode ? credentials.token().getEncoded()
 					: rsaKey == null ? null : rsaKey.getBytes(StandardCharsets.UTF_8);
 			if (credential == null) {
 				return null;
@@ -278,7 +294,8 @@ public class VoteForwarder {
 
 	private void rememberSuccess(String name, Destination destination) {
 		// Read the effective target again in case configuration changed during the send.
-		if (receiver.getServers().contains(name) && destination.equals(destinationOf(name, captureServer(receiver.getServerData(name))))) {
+		ForwardServer server = receiver.getServers().contains(name) ? receiver.getServerData(name) : null;
+		if (destination.equals(destinationOf(name, server, captureCredentials(name, server)))) {
 			synchronized (lifecycleLock) {
 				if (!retries.isShutdown()) {
 					previousSuccesses.put(name, destination);
@@ -326,8 +343,9 @@ public class VoteForwarder {
 		try {
 			if (!retries.isShutdown() && !receiver.isStopping() && retryTimeLeft(retry) > 0) {
 				ForwardServer server = receiver.getServers().contains(retry.name())
-						? captureServer(receiver.getServerData(retry.name())) : null;
-				Destination destination = observeDestination(retry.name(), server);
+						? receiver.getServerData(retry.name()) : null;
+				Credentials credentials = captureCredentials(retry.name(), server);
+				Destination destination = observeDestination(retry.name(), server, credentials);
 				boolean eligible;
 				synchronized (lifecycleLock) {
 					eligible = retry.destination().equals(destination) && hasRequiredSuccess(retry);
@@ -336,7 +354,7 @@ public class VoteForwarder {
 				long timeLeft = retryTimeLeft(retry);
 				if (eligible && timeLeft > 0) {
 					long deadline = attemptStart + Math.min(timeLeft, TimeUnit.MILLISECONDS.toNanos(ATTEMPT_TIMEOUT_MILLIS));
-					failedAt = send(retry.vote(), retry.name(), server, Origin.RETRY, deadline).failedAt();
+					failedAt = send(retry.vote(), retry.name(), server, credentials, Origin.RETRY, deadline).failedAt();
 				}
 			}
 		} catch (RuntimeException ex) {
@@ -352,8 +370,8 @@ public class VoteForwarder {
 		}
 	}
 
-	private SendResult send(Vote vote, String name, ForwardServer server, Origin origin, long deadline) {
-		receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + server.isUseTokens());
+	private SendResult send(Vote vote, String name, ForwardServer server, Credentials credentials, Origin origin, long deadline) {
+		receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + credentials.tokenMode());
 		Attempt attempt = null;
 		boolean preparingPayload = false;
 		boolean writing = false;
@@ -369,12 +387,12 @@ public class VoteForwarder {
 			receiver.debug("Received handshake from " + VoteLogSafety.field(name)
 					+ " (" + (greeting == null ? 0 : greeting.length()) + " chars)");
 
-			if (greeting == null && server.isUseTokens()) {
+			if (greeting == null && credentials.tokenMode()) {
 				throw new EOFException("Missing token-mode greeting");
 			}
 			preparingPayload = true;
 			byte[] payload;
-			if (server.isUseTokens()) {
+			if (credentials.tokenMode()) {
 				String[] parts = greeting.split(" ");
 				if (parts.length < 3 || !HANDSHAKE_PREFIX.equals(parts[0]) || !HANDSHAKE_V2.equals(parts[1])) {
 					throw new IllegalStateException("Invalid token-mode handshake");
@@ -392,7 +410,7 @@ public class VoteForwarder {
 				String innerJson = inner.toString();
 
 				Mac mac = Mac.getInstance("HmacSHA256");
-				mac.init(server.getToken());
+				mac.init(credentials.token());
 				String sig = Base64.getEncoder()
 						.encodeToString(mac.doFinal(innerJson.getBytes(StandardCharsets.UTF_8)));
 

@@ -382,6 +382,34 @@ class VoteForwarderRetryTest {
 		}
 	}
 
+	@Test
+	void customLegacyModeWithRetainedTokenUsesLegacyPathOnInitialSendAndRetry() throws Exception {
+		try (var run = new Forwarding(1, ForwardRetryConfig.DEFAULT)) {
+			var target = new ForwardServer(true, "localhost", 2001, "synthetic-key", run.token()) {
+				@Override
+				public boolean isUseTokens() {
+					return false;
+				}
+			};
+			run.targets.put("backend", target);
+			run.greeting = "VOTIFIER 1";
+			var publicKey = mock(java.security.PublicKey.class);
+			when(run.receiver.getPublicKey(target)).thenReturn(publicKey);
+			when(run.receiver.encrypt(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.same(publicKey)))
+					.thenAnswer(call -> call.getArgument(0));
+
+			run.forward(testVote());
+			run.unavailablePort = 2001;
+			run.forward(testVote());
+			assertEquals(List.of(60L), run.scheduler.delays);
+			run.unavailablePort = -1;
+			run.scheduler.runNext();
+			assertEquals(2, run.payloads.size());
+			assertTrue(run.payloads.getLast().toString(StandardCharsets.UTF_8).startsWith("VOTE\n"));
+			assertTrue(run.scheduler.getQueue().isEmpty());
+		}
+	}
+
 	private static Vote testVote() {
 		return new Vote("example.test", "TestVoter", "192.0.2.10", "test-time");
 	}
@@ -434,6 +462,7 @@ class VoteForwarderRetryTest {
 		final List<ByteArrayOutputStream> payloads = new ArrayList<>();
 		final ManualScheduler scheduler = new ManualScheduler();
 		final VoteForwarder forwarder;
+		final VoteReceiver receiver = mock(VoteReceiver.class);
 		int unavailablePort = -1;
 		int writeCalls;
 		boolean failWrite;
@@ -448,7 +477,6 @@ class VoteForwarderRetryTest {
 		}
 
 		Forwarding(int capacity, ForwardRetryConfig retryConfig) throws Exception {
-			var receiver = mock(VoteReceiver.class);
 			when(receiver.getServers()).thenReturn(targets.keySet());
 			when(receiver.getServerData(org.mockito.ArgumentMatchers.anyString()))
 					.thenAnswer(call -> targets.get(call.getArgument(0)));
