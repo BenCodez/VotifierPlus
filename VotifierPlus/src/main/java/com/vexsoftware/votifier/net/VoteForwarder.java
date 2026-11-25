@@ -1,9 +1,10 @@
 package com.vexsoftware.votifier.net;
 
 import java.io.BufferedReader;
+import java.io.EOFException;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.FilterInputStream;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.net.Socket;
@@ -11,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.FutureTask;
@@ -44,12 +46,24 @@ public class VoteForwarder {
 	private static final int ATTEMPT_TIMEOUT_MILLIS = 5000;
 	private static final int CONNECT_TIMEOUT_MILLIS = 1000;
 	private static final int HANDSHAKE_TIMEOUT_MILLIS = 3000;
+	private static final int MAX_PENDING_RETRIES = 256;
+	private static final int FAST_RETRY_COUNT = 5;
 
 	private final VoteReceiver receiver;
 	private final VoteThrottleService failureLogs = new VoteThrottleService(null);
 	private final Object lifecycleLock = new Object();
 	private final Set<Attempt> attempts = new HashSet<>();
 	private final ScheduledThreadPoolExecutor deadlines;
+	private final ScheduledThreadPoolExecutor retries;
+	private final int retryCapacity;
+	private int pendingRetries;
+
+	private record Retry(String name, String host, int port, boolean tokenMode, Vote vote) {
+		boolean matches(ForwardServer server) {
+			return server != null && server.isEnabled() && port == server.getPort()
+					&& tokenMode == server.isUseTokens() && Objects.equals(host, server.getHost());
+		}
+	}
 	private final ThreadPoolExecutor closers;
 	private final int workers;
 	private final Supplier<Socket> socketFactory;
@@ -99,7 +113,15 @@ public class VoteForwarder {
 
 	VoteForwarder(VoteReceiver receiver, int workers, BiFunction<String, Integer, InetSocketAddress> resolveAddress,
 			Supplier<Socket> socketFactory) {
+		this(receiver, workers, resolveAddress, socketFactory,
+				new ScheduledThreadPoolExecutor(1, work -> daemon(work, "Votifier-Retry")));
+	}
+
+	VoteForwarder(VoteReceiver receiver, int workers, BiFunction<String, Integer, InetSocketAddress> resolveAddress,
+			Supplier<Socket> socketFactory, ScheduledThreadPoolExecutor retries) {
 		this.receiver = receiver;
+		this.retries = retries;
+		retryCapacity = receiver == null ? 0 : Math.min(MAX_PENDING_RETRIES, receiver.getForwardQueueCapacity());
 		this.workers = workers;
 		this.resolveAddress = resolveAddress;
 		this.socketFactory = socketFactory;
@@ -163,101 +185,158 @@ public class VoteForwarder {
 	}
 
 	private void forwardTargets(Vote vote, boolean direct) {
+		Vote snapshot = new Vote(vote.getServiceName(), vote.getUsername(), vote.getAddress(), vote.getTimeStamp());
 		for (String name : receiver.getServers()) {
 			if (stopped || Thread.currentThread().isInterrupted()) {
 				return;
 			}
 			ForwardServer server = receiver.getServerData(name);
-
-			if (!server.isEnabled()) {
-				receiver.debug("Skipping disabled forward server: " + VoteLogSafety.field(name));
+			if (server == null || !server.isEnabled()) {
+				receiver.debug("Skipping disabled or missing forward server: " + VoteLogSafety.field(name));
 				continue;
 			}
+			boolean retryable = send(snapshot, name, server, direct);
+			if (retryable && !direct) {
+				queueRetry(new Retry(name, server.getHost(), server.getPort(), server.isUseTokens(), snapshot));
+			}
+		}
+	}
 
-			receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + server.isUseTokens());
+	private void queueRetry(Retry retry) {
+		synchronized (lifecycleLock) {
+			if (retries.isShutdown()) {
+				return;
+			}
+			if (pendingRetries < retryCapacity) {
+				pendingRetries++;
+				scheduleRetry(retry, 1);
+				return;
+			}
+		}
+		logFailure("retry-queue", "Forwarding retry queue is full");
+	}
 
-			long deadline = deadlineAfter(ATTEMPT_TIMEOUT_MILLIS);
-			Attempt attempt = null;
-			try {
-				attempt = registerAttempt(direct, name, deadline);
-				Socket socket = attempt.socket;
-				InetSocketAddress address = resolve(server, deadline);
-				long connectDeadline = limitedDeadline(deadline, CONNECT_TIMEOUT_MILLIS);
-				socket.connect(address, timeoutMillis(connectDeadline));
-				remaining(connectDeadline);
-				long greetingDeadline = limitedDeadline(deadline, HANDSHAKE_TIMEOUT_MILLIS);
-				String greeting = readSocketGreeting(socket, greetingDeadline);
-				receiver.debug("Received handshake from " + VoteLogSafety.field(name)
-						+ " (" + (greeting == null ? 0 : greeting.length()) + " chars)");
+	// Caller holds lifecycleLock. One slot covers both delayed and running work.
+	private void scheduleRetry(Retry retry, int number) {
+		retries.schedule(() -> runRetry(retry, number), number <= FAST_RETRY_COUNT ? 15 : 30, TimeUnit.MINUTES);
+	}
 
-				byte[] payload;
-				if (server.isUseTokens()) {
-					String[] parts = greeting.split(" ");
-					if (parts.length < 3 || !HANDSHAKE_PREFIX.equals(parts[0]) || !HANDSHAKE_V2.equals(parts[1])) {
-						throw new IllegalStateException("Invalid token-mode handshake");
-					}
-
-					String challenge = parts[2];
-
-					JsonObject inner = new JsonObject();
-					inner.addProperty(FIELD_SERVICE_NAME, vote.getServiceName());
-					inner.addProperty(FIELD_USERNAME, vote.getUsername());
-					inner.addProperty(FIELD_ADDRESS, vote.getAddress());
-					inner.addProperty(FIELD_TIMESTAMP, vote.getTimeStamp());
-					inner.addProperty(FIELD_CHALLENGE, challenge);
-
-					String innerJson = inner.toString();
-
-					Mac mac = Mac.getInstance("HmacSHA256");
-					mac.init(server.getToken());
-					String sig = Base64.getEncoder()
-							.encodeToString(mac.doFinal(innerJson.getBytes(StandardCharsets.UTF_8)));
-
-					JsonObject outer = new JsonObject();
-					outer.addProperty(FIELD_PAYLOAD, innerJson);
-					outer.addProperty(FIELD_SIGNATURE, sig);
-
-					payload = (outer.toString() + "\r\n").getBytes(StandardCharsets.UTF_8);
+	private void runRetry(Retry retry, int number) {
+		boolean retryable = false;
+		try {
+			if (!retries.isShutdown() && !receiver.isStopping() && receiver.getServers().contains(retry.name())) {
+				ForwardServer server = receiver.getServerData(retry.name());
+				if (retry.matches(server)) {
+					retryable = send(retry.vote(), retry.name(), server, false);
+				}
+			}
+		} catch (RuntimeException ex) {
+			logFailure("retry-config", "Unable to check forwarding retry target: " + VoteLogSafety.exceptionType(ex));
+		} finally {
+			synchronized (lifecycleLock) {
+				if (retryable && !retries.isShutdown()) {
+					scheduleRetry(retry, Math.min(number + 1, FAST_RETRY_COUNT + 1));
 				} else {
-					String voteString = String.join("\n", OPCODE_VOTE, vote.getServiceName(), vote.getUsername(),
-							vote.getAddress(), vote.getTimeStamp(), "") + "\n";
-					payload = receiver.encrypt(voteString.getBytes(StandardCharsets.UTF_8), receiver.getPublicKey(server));
-				}
-
-				remaining(deadline);
-				var output = socket.getOutputStream();
-				output.write(payload);
-				output.flush();
-				boolean completed;
-				synchronized (lifecycleLock) {
-					boolean expired = deadline - System.nanoTime() <= 0;
-					completed = !stopped && !attempt.ended && !expired;
-					finishAttempt(attempt, !stopped && expired);
-				}
-				if (completed) {
-					receiver.debug("Payload forwarded to " + VoteLogSafety.field(name) + " (" + payload.length + " bytes)");
-				} else {
-					logFailure("target|" + name, "Forwarding attempt ended before completion: " + VoteLogSafety.field(name));
-				}
-			} catch (Exception ex) {
-				logFailure("target|" + name, "Failed to forward vote to " + VoteLogSafety.field(name) + ": "
-						+ VoteLogSafety.exceptionType(ex));
-				if (ex instanceof InterruptedException) {
-					Thread.currentThread().interrupt();
-					return;
-				}
-			} finally {
-				if (attempt != null) {
-					synchronized (lifecycleLock) {
-						finishAttempt(attempt, !stopped && deadline - System.nanoTime() <= 0);
-						awaitClose(attempt, deadline);
-					}
-					if (attempt.closeRejected) {
-						logFailure("close|" + name, "Forwarding socket close submission failed");
-					}
+					pendingRetries--;
 				}
 			}
 		}
+	}
+
+	// True means another attempt is safe. Neither protocol acknowledges delivery.
+	private boolean send(Vote vote, String name, ForwardServer server, boolean direct) {
+		receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + server.isUseTokens());
+		long deadline = deadlineAfter(ATTEMPT_TIMEOUT_MILLIS);
+		Attempt attempt = null;
+		boolean preparingPayload = false;
+		boolean writing = false;
+		try {
+			attempt = registerAttempt(direct, name, deadline);
+			Socket socket = attempt.socket;
+			InetSocketAddress address = resolve(server, deadline);
+			long connectDeadline = limitedDeadline(deadline, CONNECT_TIMEOUT_MILLIS);
+			socket.connect(address, timeoutMillis(connectDeadline));
+			remaining(connectDeadline);
+			long greetingDeadline = limitedDeadline(deadline, HANDSHAKE_TIMEOUT_MILLIS);
+			String greeting = readSocketGreeting(socket, greetingDeadline);
+			receiver.debug("Received handshake from " + VoteLogSafety.field(name)
+					+ " (" + (greeting == null ? 0 : greeting.length()) + " chars)");
+
+			if (greeting == null && server.isUseTokens()) {
+				throw new EOFException("Missing token-mode greeting");
+			}
+			preparingPayload = true;
+			byte[] payload;
+			if (server.isUseTokens()) {
+				String[] parts = greeting.split(" ");
+				if (parts.length < 3 || !HANDSHAKE_PREFIX.equals(parts[0]) || !HANDSHAKE_V2.equals(parts[1])) {
+					throw new IllegalStateException("Invalid token-mode handshake");
+				}
+
+				String challenge = parts[2];
+
+				JsonObject inner = new JsonObject();
+				inner.addProperty(FIELD_SERVICE_NAME, vote.getServiceName());
+				inner.addProperty(FIELD_USERNAME, vote.getUsername());
+				inner.addProperty(FIELD_ADDRESS, vote.getAddress());
+				inner.addProperty(FIELD_TIMESTAMP, vote.getTimeStamp());
+				inner.addProperty(FIELD_CHALLENGE, challenge);
+
+				String innerJson = inner.toString();
+
+				Mac mac = Mac.getInstance("HmacSHA256");
+				mac.init(server.getToken());
+				String sig = Base64.getEncoder()
+						.encodeToString(mac.doFinal(innerJson.getBytes(StandardCharsets.UTF_8)));
+
+				JsonObject outer = new JsonObject();
+				outer.addProperty(FIELD_PAYLOAD, innerJson);
+				outer.addProperty(FIELD_SIGNATURE, sig);
+
+				payload = (outer.toString() + "\r\n").getBytes(StandardCharsets.UTF_8);
+			} else {
+				String voteString = String.join("\n", OPCODE_VOTE, vote.getServiceName(), vote.getUsername(),
+						vote.getAddress(), vote.getTimeStamp(), "") + "\n";
+				payload = receiver.encrypt(voteString.getBytes(StandardCharsets.UTF_8), receiver.getPublicKey(server));
+			}
+
+			preparingPayload = false;
+			remaining(deadline);
+			var output = socket.getOutputStream();
+			writing = true;
+			output.write(payload);
+			output.flush();
+			boolean completed;
+			synchronized (lifecycleLock) {
+				boolean expired = deadline - System.nanoTime() <= 0;
+				completed = !stopped && !attempt.ended && !expired;
+				finishAttempt(attempt, !stopped && expired);
+			}
+			if (completed) {
+				receiver.debug("Payload forwarded to " + VoteLogSafety.field(name) + " (" + payload.length + " bytes)");
+			} else {
+				logFailure("target|" + name, "Forwarding attempt ended before completion: " + VoteLogSafety.field(name));
+			}
+		} catch (Exception ex) {
+			logFailure("target|" + name, "Failed to forward vote to " + VoteLogSafety.field(name) + ": "
+					+ VoteLogSafety.exceptionType(ex));
+			if (ex instanceof InterruptedException) {
+				Thread.currentThread().interrupt();
+			}
+			return ex instanceof IOException && !preparingPayload && !writing
+					&& !Thread.currentThread().isInterrupted();
+		} finally {
+			if (attempt != null) {
+				synchronized (lifecycleLock) {
+					finishAttempt(attempt, !stopped && deadline - System.nanoTime() <= 0);
+					awaitClose(attempt, deadline);
+				}
+				if (attempt.closeRejected) {
+					logFailure("close|" + name, "Forwarding socket close submission failed");
+				}
+			}
+		}
+		return false;
 	}
 
 	private Attempt registerAttempt(boolean direct, String name, long deadline) throws Exception {
@@ -396,6 +475,7 @@ public class VoteForwarder {
 	void sealDirectCalls() {
 		synchronized (lifecycleLock) {
 			directSealed = true;
+			pendingRetries -= retries.shutdownNow().size();
 		}
 	}
 
@@ -409,6 +489,7 @@ public class VoteForwarder {
 				return 0;
 			}
 			stopped = true;
+			pendingRetries -= retries.shutdownNow().size();
 			lifecycleLock.notifyAll();
 			for (Attempt attempt : attempts) {
 				if (!attempt.ended) {
@@ -438,7 +519,7 @@ public class VoteForwarder {
 	boolean isTerminated() {
 		synchronized (lifecycleLock) {
 			return stopped && runtimeCalls == 0 && !directCall && attempts.isEmpty()
-					&& resolver.isTerminated() && deadlines.isTerminated() && closers.isTerminated();
+					&& retries.isTerminated() && resolver.isTerminated() && deadlines.isTerminated() && closers.isTerminated();
 		}
 	}
 
