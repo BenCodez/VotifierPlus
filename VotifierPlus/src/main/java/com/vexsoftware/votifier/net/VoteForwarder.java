@@ -11,6 +11,11 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Map;
+import java.security.Key;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -20,6 +25,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.function.BiFunction;
 import java.util.concurrent.TimeUnit;
@@ -48,7 +54,8 @@ public class VoteForwarder {
 	private static final int CONNECT_TIMEOUT_MILLIS = 1000;
 	private static final int HANDSHAKE_TIMEOUT_MILLIS = 3000;
 	private static final int MAX_PENDING_RETRIES = 256;
-	private static final int FAST_RETRY_COUNT = 5;
+	private static final int FIRST_RETRY_DELAY_SECONDS = 60;
+	private static final long RETRY_LIFETIME_NANOS = TimeUnit.HOURS.toNanos(1);
 
 	private final VoteReceiver receiver;
 	private final VoteThrottleService failureLogs = new VoteThrottleService(null);
@@ -57,14 +64,25 @@ public class VoteForwarder {
 	private final ScheduledThreadPoolExecutor deadlines;
 	private final ScheduledThreadPoolExecutor retries;
 	private final int retryCapacity;
+	private final ForwardRetryConfig retryConfig;
+	private final LongSupplier retryClock;
+	private final Map<String, Destination> previousSuccesses = new HashMap<>();
 	private int pendingRetries;
 
-	private record Retry(String name, String host, int port, boolean tokenMode, Vote vote) {
-		boolean matches(ForwardServer server) {
-			return server != null && server.isEnabled() && port == server.getPort()
-					&& tokenMode == server.isUseTokens() && Objects.equals(host, server.getHost());
+	private record Credentials(boolean tokenMode, Key token) {
+		private static Credentials capture(ForwardServer server) {
+			if (server == null || !server.isEnabled()) {
+				return null;
+			}
+			boolean tokenMode = server.isUseTokens();
+			return new Credentials(tokenMode, tokenMode ? server.getToken() : null);
 		}
 	}
+
+	private record Destination(String host, int port, boolean tokenMode, String fingerprint, ForwardRetryConfig policy) {}
+
+	private record Retry(String name, Destination destination, Vote vote, long failedAt) {}
+
 	private final ThreadPoolExecutor closers;
 	private final int workers;
 	private final Supplier<Socket> socketFactory;
@@ -124,8 +142,17 @@ public class VoteForwarder {
 
 	VoteForwarder(VoteReceiver receiver, int workers, BiFunction<String, Integer, InetSocketAddress> resolveAddress,
 			Supplier<Socket> socketFactory, ScheduledThreadPoolExecutor retries) {
+		this(receiver, workers, resolveAddress, socketFactory, retries,
+				receiver == null ? ForwardRetryConfig.DEFAULT : receiver.getForwardRetryConfig(), System::nanoTime);
+	}
+
+	VoteForwarder(VoteReceiver receiver, int workers, BiFunction<String, Integer, InetSocketAddress> resolveAddress,
+			Supplier<Socket> socketFactory, ScheduledThreadPoolExecutor retries, ForwardRetryConfig retryConfig,
+			LongSupplier retryClock) {
 		this.receiver = receiver;
 		this.retries = retries;
+		this.retryConfig = retryConfig;
+		this.retryClock = retryClock;
 		retryCapacity = receiver == null ? 0 : Math.min(MAX_PENDING_RETRIES, receiver.getForwardQueueCapacity());
 		this.workers = workers;
 		this.resolveAddress = resolveAddress;
@@ -191,30 +218,103 @@ public class VoteForwarder {
 
 	private void forwardTargets(Vote vote, boolean direct) {
 		Vote snapshot = new Vote(vote.getServiceName(), vote.getUsername(), vote.getAddress(), vote.getTimeStamp());
-		for (String name : receiver.getServers()) {
+		Set<String> names = receiver.getServers();
+		synchronized (lifecycleLock) {
+			previousSuccesses.keySet().retainAll(names);
+		}
+		for (String name : names) {
 			if (stopped || Thread.currentThread().isInterrupted()) {
 				return;
 			}
 			ForwardServer server = receiver.getServerData(name);
+			Credentials credentials = captureCredentials(name, server);
+			Destination destination = direct ? null : observeDestination(name, server, credentials);
 			if (server == null || !server.isEnabled()) {
 				receiver.debug("Skipping disabled or missing forward server: " + VoteLogSafety.field(name));
 				continue;
 			}
-			boolean retryable = send(snapshot, name, server, direct ? Origin.DIRECT : Origin.INITIAL);
-			if (retryable && !direct) {
-				queueRetry(new Retry(name, server.getHost(), server.getPort(), server.isUseTokens(), snapshot));
+			if (credentials == null) {
+				continue;
+			}
+			Long failedAt = send(snapshot, name, server, credentials, destination, direct ? Origin.DIRECT : Origin.INITIAL,
+					deadlineAfter(ATTEMPT_TIMEOUT_MILLIS));
+			if (failedAt != null && destination != null) {
+				queueRetry(new Retry(name, destination, snapshot, failedAt));
 			}
 		}
 	}
 
+	private Credentials captureCredentials(String name, ForwardServer server) {
+		try {
+			return Credentials.capture(server);
+		} catch (RuntimeException ex) {
+			logFailure("retry-identity|" + name, "Unable to read forwarding credentials: " + VoteLogSafety.exceptionType(ex));
+			return null;
+		}
+	}
+
+	private Destination observeDestination(String name, ForwardServer server, Credentials credentials) {
+		Destination destination = destinationOf(name, server, credentials);
+		synchronized (lifecycleLock) {
+			if (!Objects.equals(destination, previousSuccesses.get(name))) {
+				previousSuccesses.remove(name);
+			}
+		}
+		return destination;
+	}
+
+	private Destination destinationOf(String name, ForwardServer server, Credentials credentials) {
+		if (credentials == null) {
+			return null;
+		}
+		try {
+			boolean tokenMode = credentials.tokenMode();
+			String rsaKey = server.getKey();
+			byte[] credential = tokenMode ? credentials.token().getEncoded()
+					: rsaKey == null ? null : rsaKey.getBytes(StandardCharsets.UTF_8);
+			if (credential == null) {
+				return null;
+			}
+			byte[] digest = MessageDigest.getInstance("SHA-256").digest(credential);
+			ForwardRetryConfig policy = server.getRetryConfig() == null ? retryConfig : server.getRetryConfig();
+			return new Destination(server.getHost(), server.getPort(), tokenMode, Base64.getEncoder().encodeToString(digest), policy);
+		} catch (RuntimeException | NoSuchAlgorithmException ex) {
+			logFailure("retry-identity|" + name, "Unable to establish forwarding retry identity: " + VoteLogSafety.exceptionType(ex));
+			return null;
+		}
+	}
+
+	private void rememberSuccess(String name, Destination destination) {
+		// Read the effective target again in case configuration changed during the send.
+		ForwardServer server = receiver.getServers().contains(name) ? receiver.getServerData(name) : null;
+		if (destination.equals(destinationOf(name, server, captureCredentials(name, server)))) {
+			synchronized (lifecycleLock) {
+				if (!retries.isShutdown()) {
+					previousSuccesses.put(name, destination);
+				}
+			}
+		}
+	}
+
+	private boolean hasRequiredSuccess(Retry retry) {
+		return hasRequiredSuccess(retry.name(), retry.destination());
+	}
+
+	private boolean hasRequiredSuccess(String name, Destination destination) {
+		return !destination.policy().requirePreviousSuccessBeforeRetry()
+				|| destination.equals(previousSuccesses.get(name));
+	}
+
 	private void queueRetry(Retry retry) {
 		synchronized (lifecycleLock) {
-			if (retries.isShutdown()) {
+			if (retries.isShutdown() || retry.destination().policy().maxRetries() == 0 || !hasRequiredSuccess(retry)) {
 				return;
 			}
 			if (pendingRetries < retryCapacity) {
-				pendingRetries++;
-				scheduleRetry(retry, 1);
+				long delay = TimeUnit.SECONDS.toNanos(FIRST_RETRY_DELAY_SECONDS) - (retryClock.getAsLong() - retry.failedAt());
+				if (scheduleRetry(retry, 1, Math.max(0, delay))) {
+					pendingRetries++;
+				}
 				return;
 			}
 		}
@@ -222,36 +322,53 @@ public class VoteForwarder {
 	}
 
 	// Caller holds lifecycleLock. One slot covers both delayed and running work.
-	private void scheduleRetry(Retry retry, int number) {
-		retries.schedule(() -> runRetry(retry, number), number <= FAST_RETRY_COUNT ? 15 : 30, TimeUnit.MINUTES);
+	private boolean scheduleRetry(Retry retry, int number, long delayNanos) {
+		if (number > retry.destination().policy().maxRetries() || delayNanos >= retryTimeLeft(retry) || !hasRequiredSuccess(retry)) {
+			return false;
+		}
+		retries.schedule(() -> runRetry(retry, number), delayNanos, TimeUnit.NANOSECONDS);
+		return true;
+	}
+
+	private long retryTimeLeft(Retry retry) {
+		return RETRY_LIFETIME_NANOS - (retryClock.getAsLong() - retry.failedAt());
 	}
 
 	private void runRetry(Retry retry, int number) {
-		boolean retryable = false;
+		Long failedAt = null;
 		try {
-			if (!retries.isShutdown() && !receiver.isStopping() && receiver.getServers().contains(retry.name())) {
-				ForwardServer server = receiver.getServerData(retry.name());
-				if (retry.matches(server)) {
-					retryable = send(retry.vote(), retry.name(), server, Origin.RETRY);
+			if (!retries.isShutdown() && !receiver.isStopping() && retryTimeLeft(retry) > 0) {
+				ForwardServer server = receiver.getServers().contains(retry.name())
+						? receiver.getServerData(retry.name()) : null;
+				Credentials credentials = captureCredentials(retry.name(), server);
+				Destination destination = observeDestination(retry.name(), server, credentials);
+				boolean eligible;
+				synchronized (lifecycleLock) {
+					eligible = retry.destination().equals(destination) && hasRequiredSuccess(retry);
+				}
+				long attemptStart = System.nanoTime();
+				long timeLeft = retryTimeLeft(retry);
+				if (eligible && timeLeft > 0) {
+					long deadline = attemptStart + Math.min(timeLeft, TimeUnit.MILLISECONDS.toNanos(ATTEMPT_TIMEOUT_MILLIS));
+					failedAt = send(retry.vote(), retry.name(), server, credentials, destination, Origin.RETRY, deadline);
 				}
 			}
 		} catch (RuntimeException ex) {
 			logFailure("retry-config", "Unable to check forwarding retry target: " + VoteLogSafety.exceptionType(ex));
 		} finally {
 			synchronized (lifecycleLock) {
-				if (retryable && !retries.isShutdown()) {
-					scheduleRetry(retry, Math.min(number + 1, FAST_RETRY_COUNT + 1));
-				} else {
+				long interval = TimeUnit.SECONDS.toNanos(retry.destination().policy().retryIntervalSeconds());
+				if (failedAt == null || retries.isShutdown()
+						|| !scheduleRetry(retry, number + 1, Math.max(0, interval - (retryClock.getAsLong() - failedAt)))) {
 					pendingRetries--;
 				}
 			}
 		}
 	}
 
-	// True means another attempt is safe. Neither protocol acknowledges delivery.
-	private boolean send(Vote vote, String name, ForwardServer server, Origin origin) {
-		receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + server.isUseTokens());
-		long deadline = deadlineAfter(ATTEMPT_TIMEOUT_MILLIS);
+	private Long send(Vote vote, String name, ForwardServer server, Credentials credentials, Destination destination,
+			Origin origin, long deadline) {
+		receiver.debug("Preparing to forward vote to: " + VoteLogSafety.field(name) + ", tokens mode: " + credentials.tokenMode());
 		Attempt attempt = null;
 		boolean preparingPayload = false;
 		boolean writing = false;
@@ -267,12 +384,12 @@ public class VoteForwarder {
 			receiver.debug("Received handshake from " + VoteLogSafety.field(name)
 					+ " (" + (greeting == null ? 0 : greeting.length()) + " chars)");
 
-			if (greeting == null && server.isUseTokens()) {
+			if (greeting == null && credentials.tokenMode()) {
 				throw new EOFException("Missing token-mode greeting");
 			}
 			preparingPayload = true;
 			byte[] payload;
-			if (server.isUseTokens()) {
+			if (credentials.tokenMode()) {
 				String[] parts = greeting.split(" ");
 				if (parts.length < 3 || !HANDSHAKE_PREFIX.equals(parts[0]) || !HANDSHAKE_V2.equals(parts[1])) {
 					throw new IllegalStateException("Invalid token-mode handshake");
@@ -290,7 +407,7 @@ public class VoteForwarder {
 				String innerJson = inner.toString();
 
 				Mac mac = Mac.getInstance("HmacSHA256");
-				mac.init(server.getToken());
+				mac.init(credentials.token());
 				String sig = Base64.getEncoder()
 						.encodeToString(mac.doFinal(innerJson.getBytes(StandardCharsets.UTF_8)));
 
@@ -324,11 +441,20 @@ public class VoteForwarder {
 				finishAttempt(attempt, !stopped && expired);
 			}
 			if (completed) {
+				if (origin == Origin.INITIAL && destination != null && destination.policy().requirePreviousSuccessBeforeRetry()) {
+					rememberSuccess(name, destination);
+				}
 				receiver.debug("Payload forwarded to " + VoteLogSafety.field(name) + " (" + payload.length + " bytes)");
 			} else {
 				logFailure("target|" + name, "Forwarding attempt ended before completion: " + VoteLogSafety.field(name));
 			}
 		} catch (Exception ex) {
+			long failedAt;
+			boolean eligible;
+			synchronized (lifecycleLock) {
+				failedAt = retryClock.getAsLong();
+				eligible = destination != null && hasRequiredSuccess(name, destination);
+			}
 			logFailure("target|" + name, "Failed to forward vote to " + VoteLogSafety.field(name) + ": "
 					+ VoteLogSafety.exceptionType(ex));
 			if (ex instanceof InterruptedException) {
@@ -336,7 +462,8 @@ public class VoteForwarder {
 			}
 			// DNS waits signal their deadline via Future.get's TimeoutException.
 			return (ex instanceof IOException || ex instanceof TimeoutException)
-					&& !preparingPayload && !writing && !Thread.currentThread().isInterrupted();
+					&& !preparingPayload && !writing && !Thread.currentThread().isInterrupted() && eligible
+					? failedAt : null;
 		} finally {
 			if (attempt != null) {
 				synchronized (lifecycleLock) {
@@ -348,7 +475,7 @@ public class VoteForwarder {
 				}
 			}
 		}
-		return false;
+		return null;
 	}
 
 	private Attempt registerAttempt(Origin origin, String name, long deadline) throws Exception {
@@ -495,6 +622,7 @@ public class VoteForwarder {
 		synchronized (lifecycleLock) {
 			directSealed = true;
 			pendingRetries -= retries.shutdownNow().size();
+			previousSuccesses.clear();
 			for (Attempt attempt : attempts) {
 				if (attempt.origin == Origin.RETRY) {
 					finishAttempt(attempt);
@@ -515,6 +643,7 @@ public class VoteForwarder {
 			}
 			stopped = true;
 			pendingRetries -= retries.shutdownNow().size();
+			previousSuccesses.clear();
 			lifecycleLock.notifyAll();
 			for (Attempt attempt : attempts) {
 				if (!attempt.ended) {

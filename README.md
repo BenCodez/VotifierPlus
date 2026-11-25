@@ -15,16 +15,34 @@ nodes continue to work without it.
 
 ## Forwarding retries
 
-When a forwarding connection fails before the vote payload starts writing,
-VotifierPlus retries that destination after 15 minutes. It uses 15-minute
-delays for the first five retries, then 30-minute delays while the destination
-remains eligible. Other destinations continue independently. Protocol or
-payload preparation errors are terminal. Once a payload write begins, the
-receiver may have accepted the vote, so VotifierPlus does not retry an error
-from that point.
+Eligible transport failures before a payload write can be retried. The first
+retry always waits 60 seconds after the original failure. Later retries wait
+`ForwardingRetry.RetryIntervalSeconds` seconds after the preceding failure
+(default 300, valid range 1–3600). `ForwardingRetry.MaxRetries` counts retries
+after the initial send (default 12, valid range 0–3600). Zero disables retrying.
+Missing or invalid settings use their defaults. No retry begins at or after
+one hour from the original failure, even when the configured count would
+allow more attempts. With the defaults, up to 12 retries fit within that hour.
 
-The receiver keeps up to 256 pending vote/destination pairs in memory. If the
-queue fills, new failures are dropped from the retry queue. Pending retries
-are discarded when the receiver reloads or shuts down. No retry state survives
-a restart. Each retry checks the destination and uses its current credentials
-for the same forwarding protocol.
+Each destination can override those three settings under
+`Forwarding.<destination>.ForwardingRetry`. Missing or invalid overrides inherit
+the validated global values. Explicit `false` turns off the success gate and
+explicit `0` for `MaxRetries` disables retries for that destination. The
+60-second first delay and one-hour cutoff apply to every destination.
+
+`ForwardingRetry.RequirePreviousSuccessBeforeRetry` defaults to `true`. Each
+destination must first complete a normal vote payload write and flush on its
+current configuration. A connection or handshake alone does not qualify.
+Forwarding has no receiver acknowledgement, so transport success does not
+confirm authentication or processing at the destination. New incoming votes
+are still forwarded normally. Failures before the first transport success are
+discarded and are never replayed. Set this option to `false` to retry eligible
+failures before the first transport success.
+
+The receiver keeps up to 256 pending vote–destination pairs in RAM. New
+failures are dropped from the retry queue when full. A change to the target
+host, port, protocol, credential, or effective retry settings invalidates cached success for that
+destination and pending retries for the previous identity. Disabled or removed
+targets cannot retry. Reload and shutdown clear pending retries and prior
+successes. Protocol or payload errors and failures after writing begins are
+terminal because the receiver may already have accepted the vote.

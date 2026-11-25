@@ -37,6 +37,7 @@ import com.vexsoftware.votifier.crypto.TokenUtil;
 import com.vexsoftware.votifier.diagnostic.VotifierDiagnostics;
 import com.vexsoftware.votifier.diagnostic.VotifierDiagnosticsSnapshot;
 import com.vexsoftware.votifier.model.Vote;
+import com.vexsoftware.votifier.net.ForwardRetryConfig;
 import com.vexsoftware.votifier.net.ThrottleConfig;
 import com.vexsoftware.votifier.net.VoteReceiver;
 import com.vexsoftware.votifier.util.ZipResourceReader;
@@ -247,7 +248,11 @@ public class VotifierPlusVelocity {
 						tokenKey = TokenUtil.createKeyFrom(token);
 					}
 					return new ForwardServer(d.node("Enabled").getBoolean(), d.node("Host").getString(),
-							d.node("Port").getInt(), d.node("Key").getString(), tokenKey);
+							d.node("Port").getInt(), d.node("Key").getString(), tokenKey,
+							getForwardRetryConfig().withOverrides(
+									d.node("ForwardingRetry", "RetryIntervalSeconds").raw(),
+									d.node("ForwardingRetry", "MaxRetries").raw(),
+									d.node("ForwardingRetry", "RequirePreviousSuccessBeforeRetry").raw()));
 				}
 
 				@Override
@@ -295,6 +300,14 @@ public class VotifierPlusVelocity {
 				}
 				}
 				return ips;
+				}
+
+				@Override
+				protected ForwardRetryConfig getForwardRetryConfig() {
+					return ForwardRetryConfig.parse(
+							getConfig().getNode("ForwardingRetry", "RetryIntervalSeconds").raw(),
+							getConfig().getNode("ForwardingRetry", "MaxRetries").raw(),
+							getConfig().getNode("ForwardingRetry", "RequirePreviousSuccessBeforeRetry").raw());
 				}
 
 				@Override

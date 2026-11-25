@@ -59,6 +59,7 @@ import com.vexsoftware.votifier.diagnostic.VotifierDiagnostics;
 import com.vexsoftware.votifier.diagnostic.VotifierDiagnosticsSnapshot;
 import com.vexsoftware.votifier.model.Vote;
 import com.vexsoftware.votifier.model.VotifierEvent;
+import com.vexsoftware.votifier.net.ForwardRetryConfig;
 import com.vexsoftware.votifier.net.ThrottleConfig;
 import com.vexsoftware.votifier.net.VoteReceiver;
 import com.vexsoftware.votifier.util.ZipResourceReader;
@@ -308,7 +309,11 @@ public class VotifierPlus extends JavaPlugin {
 						tokenKey = TokenUtil.createKeyFrom(token);
 					}
 					return new ForwardServer(d.getBoolean("Enabled"), d.getString("Host", ""), d.getInt("Port"),
-							d.getString("Key", ""), tokenKey);
+							d.getString("Key", ""), tokenKey,
+							getForwardRetryConfig().withOverrides(
+									d.get("ForwardingRetry.RetryIntervalSeconds"),
+									d.get("ForwardingRetry.MaxRetries"),
+									d.get("ForwardingRetry.RequirePreviousSuccessBeforeRetry")));
 				}
 
 				@Override
@@ -348,6 +353,14 @@ public class VotifierPlus extends JavaPlugin {
 				@Override
 				public java.util.Set<String> getTrustedProxyIps() {
 					return new java.util.HashSet<String>(getConfigFile().getData().getStringList("TrustedProxyIps"));
+				}
+
+				@Override
+				protected ForwardRetryConfig getForwardRetryConfig() {
+					return ForwardRetryConfig.parse(
+							getConfigFile().getData().get("ForwardingRetry.RetryIntervalSeconds"),
+							getConfigFile().getData().get("ForwardingRetry.MaxRetries"),
+							getConfigFile().getData().get("ForwardingRetry.RequirePreviousSuccessBeforeRetry"));
 				}
 
 				@Override
