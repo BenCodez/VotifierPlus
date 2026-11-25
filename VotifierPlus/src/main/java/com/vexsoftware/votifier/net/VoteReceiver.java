@@ -194,7 +194,7 @@ public abstract class VoteReceiver extends Thread {
 
 	private static ForwardServer copyTarget(ForwardServer target) {
 		return new ForwardServer(target.isEnabled(), target.getHost(), target.getPort(), target.getKey(),
-				target.getToken());
+				target.getToken(), target.getRetryConfig());
 	}
 
 
@@ -373,6 +373,10 @@ public abstract class VoteReceiver extends Thread {
 
 	public int getForwardWorkerCount() {
 		return 1;
+	}
+
+	protected ForwardRetryConfig getForwardRetryConfig() {
+		return ForwardRetryConfig.DEFAULT;
 	}
 
 	public int getForwardQueueCapacity() {

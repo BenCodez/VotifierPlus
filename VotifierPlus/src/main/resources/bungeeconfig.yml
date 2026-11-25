@@ -121,8 +121,15 @@ ConnectionThrottle:
   LogWindow: "60s"
 
 
-# If your using VotingPlugin you don't need this
-# Doesn't support tokens yet
+# The first retry always waits 60 seconds. Pending retries expire after one hour.
+ForwardingRetry:
+  # Delay between subsequent retries, in seconds (1 to 3600).
+  RetryIntervalSeconds: 300
+  # Number of retries after the initial send (0 disables retries, maximum 3600).
+  MaxRetries: 12
+  # Require a prior completed write and flush to this destination during this run.
+  RequirePreviousSuccessBeforeRetry: true
+
 Forwarding:
   server1:
     Enabled: false
@@ -131,3 +138,8 @@ Forwarding:
     Key: ''
     # If token is set a token will be used instead of the key
     Token: ''
+    # Optional overrides. Omitted or invalid values inherit the global settings.
+    # ForwardingRetry:
+    #   RetryIntervalSeconds: 300
+    #   MaxRetries: 12
+    #   RequirePreviousSuccessBeforeRetry: true

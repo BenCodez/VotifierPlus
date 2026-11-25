@@ -19,6 +19,7 @@ import java.security.Key;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +29,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import javax.crypto.KeyGenerator;
@@ -38,12 +40,13 @@ import org.junit.jupiter.api.Test;
 import com.google.gson.JsonParser;
 import com.vexsoftware.votifier.ForwardServer;
 import com.vexsoftware.votifier.model.Vote;
+import com.vexsoftware.votifier.net.ForwardRetryConfig;
 import com.vexsoftware.votifier.net.VoteForwarder;
 import com.vexsoftware.votifier.net.VoteReceiver;
 
 class VoteForwarderRetryTest {
 	@Test
-	void retriesOnlyFailedTargetWithOriginalVoteAndCurrentToken() throws Exception {
+	void retriesOnlyFailedTargetWithOriginalVoteAndConfiguredToken() throws Exception {
 		try (var run = new Forwarding(2)) {
 			run.addTarget("healthy", 2001);
 			run.addTarget("recovering", 2002);
@@ -56,12 +59,11 @@ class VoteForwarderRetryTest {
 			for (int i = 0; i < 7; i++) {
 				run.scheduler.runNext();
 			}
-			assertEquals(List.of(15L, 15L, 15L, 15L, 15L, 30L, 30L, 30L), run.scheduler.delays);
+			assertEquals(List.of(60L, 300L, 300L, 300L, 300L, 300L, 300L, 300L), run.scheduler.delays);
 			assertEquals(1, Collections.frequency(run.connects, 2001));
 			assertEquals(8, Collections.frequency(run.connects, 2002));
 			assertEquals(1, run.payloads.size());
 
-			run.addTarget("recovering", 2002);
 			run.unavailablePort = -1;
 			run.scheduler.runNext();
 			assertTrue(run.scheduler.getQueue().isEmpty());
@@ -154,7 +156,7 @@ class VoteForwarderRetryTest {
 			run.slowResolution = true;
 			run.forward(testVote());
 			run.scheduler.runNext();
-			assertEquals(List.of(15L, 15L), run.scheduler.delays);
+			assertEquals(List.of(60L, 300L), run.scheduler.delays);
 			assertTrue(run.connects.isEmpty());
 
 			run.slowResolution = false;
@@ -184,12 +186,161 @@ class VoteForwarderRetryTest {
 		}
 	}
 
+	@Test
+	void fixedFirstRetryThenConfiguredIntervalAndCount() throws Exception {
+		for (int interval : new int[] {1, 300, 3600}) {
+			for (int count : new int[] {0, 1, 2, 3600}) {
+				try (var run = new Forwarding(1, new ForwardRetryConfig(interval, count, false))) {
+					run.addTarget("backend", 2001);
+					run.unavailablePort = 2001;
+					run.forward(testVote());
+					run.scheduler.runIfDue(TimeUnit.SECONDS.toNanos(60) - 1);
+					assertEquals(1, run.connects.size());
+					run.scheduler.runIfDue(TimeUnit.SECONDS.toNanos(60));
+					assertEquals(count == 0 ? 1 : 2, run.connects.size());
+					if (count >= 2 && interval < 3540) {
+						assertEquals(List.of(60L, (long) interval), run.scheduler.delays);
+						run.scheduler.runIfDue(TimeUnit.SECONDS.toNanos(60 + interval) - 1);
+						assertEquals(2, run.connects.size());
+						run.scheduler.runNext();
+						assertEquals(3, run.connects.size());
+					}
+					if (count <= 2 || interval == 3600) {
+						assertTrue(run.scheduler.getQueue().isEmpty());
+					}
+				}
+			}
+		}
+	}
+
+	@Test
+	void defaultCountFitsAndLateSchedulerCannotStartAtOrBeyondExpiry() throws Exception {
+		try (var run = new Forwarding(1)) {
+			run.addTarget("backend", 2001);
+			run.unavailablePort = 2001;
+			run.forward(testVote());
+			for (int i = 0; i < 12; i++) {
+				run.scheduler.runNext();
+			}
+			assertEquals(13, run.connects.size());
+			assertTrue(run.scheduler.getQueue().isEmpty());
+		}
+		for (long elapsed : new long[] {3599, 3600, 3601}) {
+			try (var run = new Forwarding(1, new ForwardRetryConfig(1, 3600, false))) {
+				run.addTarget("backend", 2001);
+				run.unavailablePort = 2001;
+				run.forward(testVote());
+				run.scheduler.runIfDue(TimeUnit.SECONDS.toNanos(elapsed));
+				assertEquals(elapsed < 3600 ? 2 : 1, run.connects.size());
+				assertTrue(run.scheduler.getQueue().isEmpty());
+			}
+		}
+	}
+
+	@Test
+	void previousTransportSuccessIsPerTargetAndClearedOnChangeAndRetirement() throws Exception {
+		try (var run = new Forwarding(2, ForwardRetryConfig.DEFAULT)) {
+			run.addTarget("cold", 2001);
+			run.addTarget("healthy", 2002);
+			run.unavailablePort = 2001;
+			run.forward(testVote());
+			assertTrue(run.scheduler.getQueue().isEmpty());
+			run.failWrite = true;
+			run.unavailablePort = -1;
+			run.forward(testVote()); // Greeting and failed write cannot establish success.
+			run.failWrite = false;
+			run.unavailablePort = 2001;
+			run.forward(testVote());
+			assertTrue(run.scheduler.getQueue().isEmpty());
+			run.targets.remove("cold");
+			run.unavailablePort = 2002;
+			run.forward(testVote());
+			assertEquals(1, run.scheduler.getQueue().size());
+			run.addTarget("healthy", 2002); // Change only the token.
+			int sends = run.connects.size();
+			run.scheduler.runNext();
+			assertEquals(sends, run.connects.size());
+			run.forward(testVote());
+			assertTrue(run.scheduler.getQueue().isEmpty());
+			run.unavailablePort = 2001;
+			run.forward(testVote()); // A completed send establishes the new token's success.
+			run.unavailablePort = 2002;
+			run.forward(testVote());
+			assertEquals(1, run.scheduler.getQueue().size());
+			run.retire();
+			assertTrue(run.scheduler.getQueue().isEmpty());
+		}
+		try (var replacement = new Forwarding(1, ForwardRetryConfig.DEFAULT)) {
+			replacement.addTarget("healthy", 2002);
+			replacement.unavailablePort = 2002;
+			replacement.forward(testVote());
+			assertTrue(replacement.scheduler.getQueue().isEmpty());
+		}
+	}
+
+	@Test
+	void invalidSettingsUseSafeDefaultsAndZeroCountDisables() {
+		assertEquals(ForwardRetryConfig.DEFAULT, ForwardRetryConfig.parse(null, null, null));
+		assertEquals(ForwardRetryConfig.DEFAULT, ForwardRetryConfig.parse(-1, -1, "invalid"));
+		assertEquals(ForwardRetryConfig.DEFAULT, ForwardRetryConfig.parse(0, Long.MAX_VALUE, 0));
+		assertEquals(ForwardRetryConfig.DEFAULT, ForwardRetryConfig.parse(1.5, "2147483648", List.of(false)));
+		assertEquals(new ForwardRetryConfig(17, 0, false), ForwardRetryConfig.parse("17", 0, false));
+	}
+
+	@Test
+	void destinationPoliciesInheritAndOverrideIndependently() throws Exception {
+		var global = new ForwardRetryConfig(300, 4, true);
+		assertEquals(global, global.withOverrides(null, null, null));
+		assertEquals(global, global.withOverrides(-1, "2147483648", "invalid"));
+		try (var run = new Forwarding(4, global)) {
+			run.addTarget("quick", 2001, global.withOverrides(1, 2, false));
+			run.addTarget("slow", 2001, global.withOverrides(3539, 4, "false"));
+			run.addTarget("inherited", 2001, global.withOverrides(null, -1, null));
+			run.addTarget("disabled", 2001, global.withOverrides(3, 0, false));
+			run.unavailablePort = 2001;
+			run.forward(testVote());
+			assertEquals(4, run.connects.size());
+			assertEquals(List.of(60L, 60L), run.scheduler.delays);
+			run.scheduler.runIfDue(TimeUnit.SECONDS.toNanos(60) - 1);
+			assertEquals(4, run.connects.size());
+			run.scheduler.runNext();
+			run.scheduler.runNext();
+			assertEquals(6, run.connects.size());
+			assertEquals(List.of(60L, 60L, 1L, 3539L), run.scheduler.delays);
+			run.scheduler.runNext();
+			assertEquals(7, run.connects.size());
+			run.scheduler.runIfDue(TimeUnit.HOURS.toNanos(1));
+			assertEquals(7, run.connects.size());
+			assertTrue(run.scheduler.getQueue().isEmpty());
+		}
+	}
+
+	@Test
+	void policyChangeInvalidatesPreviousSuccessAndQueuedVotes() throws Exception {
+		try (var run = new Forwarding(2, ForwardRetryConfig.DEFAULT)) {
+			run.addTarget("backend", 2001, ForwardRetryConfig.DEFAULT);
+			run.forward(testVote());
+			run.unavailablePort = 2001;
+			run.forward(testVote());
+			assertEquals(1, run.scheduler.getQueue().size());
+			var previous = run.targets.get("backend");
+			run.targets.put("backend", new ForwardServer(true, "localhost", 2001, "", previous.getToken(),
+					ForwardRetryConfig.DEFAULT.withOverrides(10, null, null)));
+			run.scheduler.runNext();
+			assertEquals(2, run.connects.size());
+			run.forward(testVote());
+			assertTrue(run.scheduler.getQueue().isEmpty());
+		}
+	}
+
 	private static Vote testVote() {
 		return new Vote("example.test", "TestVoter", "192.0.2.10", "test-time");
 	}
 
 	private static final class ManualScheduler extends ScheduledThreadPoolExecutor {
 		final List<Long> delays = new ArrayList<>();
+		final Map<Runnable, Long> due = new LinkedHashMap<>();
+		volatile long now;
 
 		ManualScheduler() {
 			super(1);
@@ -197,15 +348,34 @@ class VoteForwarderRetryTest {
 
 		@Override
 		public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
-			delays.add(unit.toMinutes(delay));
-			return super.schedule(command, delay, unit);
+			delays.add(unit.toSeconds(delay));
+			ScheduledFuture<?> scheduled = super.schedule(command, 1, TimeUnit.DAYS);
+			due.put((Runnable) scheduled, now + unit.toNanos(delay));
+			return scheduled;
 		}
 
 		void runNext() {
-			Runnable next = getQueue().peek();
+			Runnable next = next();
 			assertNotNull(next);
-			assertTrue(remove(next));
-			next.run();
+			runIfDue(Math.max(now, due.get(next)));
+		}
+
+		void runIfDue(long time) {
+			now = time;
+			Runnable next = next();
+			if (next != null && doneWaiting(next)) {
+				assertTrue(remove(next));
+				due.remove(next);
+				next.run();
+			}
+		}
+
+		private Runnable next() {
+			return getQueue().stream().min(Comparator.comparingLong(due::get)).orElse(null);
+		}
+
+		private boolean doneWaiting(Runnable next) {
+			return due.get(next) <= now;
 		}
 	}
 
@@ -225,13 +395,17 @@ class VoteForwarderRetryTest {
 		String greeting = "VOTIFIER 2 test-challenge";
 
 		Forwarding(int capacity) throws Exception {
+			this(capacity, new ForwardRetryConfig(300, 12, false));
+		}
+
+		Forwarding(int capacity, ForwardRetryConfig retryConfig) throws Exception {
 			var receiver = mock(VoteReceiver.class);
 			when(receiver.getServers()).thenReturn(targets.keySet());
 			when(receiver.getServerData(org.mockito.ArgumentMatchers.anyString()))
 					.thenAnswer(call -> targets.get(call.getArgument(0)));
 			when(receiver.getForwardQueueCapacity()).thenReturn(capacity);
 			var constructor = VoteForwarder.class.getDeclaredConstructor(VoteReceiver.class, int.class,
-					BiFunction.class, Supplier.class, ScheduledThreadPoolExecutor.class);
+					BiFunction.class, Supplier.class, ScheduledThreadPoolExecutor.class, ForwardRetryConfig.class, LongSupplier.class);
 			constructor.setAccessible(true);
 			BiFunction<String, Integer, InetSocketAddress> resolver = (host, port) -> {
 				if (slowResolution) {
@@ -243,11 +417,16 @@ class VoteForwarderRetryTest {
 				}
 				return new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port);
 			};
-			forwarder = constructor.newInstance(receiver, 2, resolver, (Supplier<Socket>) this::socket, scheduler);
+			forwarder = constructor.newInstance(receiver, 2, resolver, (Supplier<Socket>) this::socket,
+					scheduler, retryConfig, (LongSupplier) () -> scheduler.now);
 		}
 
 		void addTarget(String name, int port) throws Exception {
-			targets.put(name, new ForwardServer(true, "localhost", port, "", token()));
+			addTarget(name, port, null);
+		}
+
+		void addTarget(String name, int port, ForwardRetryConfig retryConfig) throws Exception {
+			targets.put(name, new ForwardServer(true, "localhost", port, "", token(), retryConfig));
 		}
 
 		Key token() throws Exception {
